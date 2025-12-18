@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+@theme {
+  --color-gl-bg: #1a1a1a;
+  --color-gl-header: #2d2d2d;
+  --color-widget-bg: #252525;
+}

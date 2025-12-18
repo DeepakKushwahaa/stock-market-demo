@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Clear Storage</title>
+</head>
+<body>
+    <h1>Clear localStorage and Reload</h1>
+    <button onclick="clearAndReload()">Click here to clear storage</button>
+    <script>
+        function clearAndReload() {
+            localStorage.clear();
+            alert('localStorage cleared! Redirecting to app...');
+            window.location.href = '/';
+        }
+        // Auto-clear on load
+        localStorage.clear();
+        console.log('localStorage cleared automatically');
+    </script>
+    <p>localStorage has been cleared. <a href="/">Go to app</a></p>
+</body>
+</html>
