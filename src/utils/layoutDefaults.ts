@@ -8,9 +8,16 @@ export const defaultLayoutConfig: any = {
   },
   dimensions: {
     borderWidth: 5,
-    minItemHeight: 200,
-    minItemWidth: 250,
+    minItemHeight: 150,
+    minItemWidth: 200,
     headerHeight: 30,
   },
-  content: [], // Empty layout - users will add widgets by clicking from sidebar
+  // Start with a column containing one empty row
+  content: [{
+    type: 'column',
+    content: [{
+      type: 'row',
+      content: []
+    }]
+  }]
 };

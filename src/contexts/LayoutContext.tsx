@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 // import { GoldenLayoutConfig } from '../types/layout.types';
 import { defaultLayoutConfig } from '../utils/layoutDefaults';
 import { layoutService } from '../services/layoutService';
@@ -17,17 +17,29 @@ interface LayoutProviderProps {
   children: any;
 }
 
-export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
-  const [layoutConfig, setLayoutConfig] = useState<any>(defaultLayoutConfig);
-  const [layoutInstance, setLayoutInstance] = useState<unknown | null>(null);
+// Helper to get initial config synchronously
+const getInitialLayoutConfig = () => {
+  const saved = layoutService.loadLayout();
+  if (saved) {
+    // saveLayout() returns ResolvedLayoutConfig which has 'root' property
+    // Check if it has valid structure (root with content)
+    const hasValidStructure = saved.root &&
+      saved.root.content &&
+      saved.root.content.length > 0;
 
-  // Load layout from localStorage on mount
-  useEffect(() => {
-    const saved = layoutService.loadLayout();
-    if (saved) {
-      setLayoutConfig(saved);
+    if (hasValidStructure) {
+      return saved;
+    } else {
+      // Clear invalid layout
+      layoutService.clearLayout();
     }
-  }, []);
+  }
+  return defaultLayoutConfig;
+};
+
+export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
+  const [layoutConfig, setLayoutConfig] = useState<any>(getInitialLayoutConfig);
+  const [layoutInstance, setLayoutInstance] = useState<unknown | null>(null);
 
   const updateLayout = (config: any) => {
     setLayoutConfig(config);

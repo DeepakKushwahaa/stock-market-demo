@@ -41,14 +41,14 @@ export const ChartWidget: React.FC<any> = ({ symbol = 'AAPL', interval: initialI
   const lineColor = stockData.change >= 0 ? '#10b981' : '#ef4444';
 
   return (
-    <div className="h-full flex flex-col bg-gray-900 text-white p-4">
+    <div className="h-full flex flex-col bg-gray-900 text-white p-3!">
       {/* Header */}
-      <div className="mb-4">
+      <div className="mb-4!">
         <div className="flex items-baseline gap-2">
           <h2 className="text-2xl font-bold">{symbol}</h2>
           <span className="text-gray-400 text-sm">{stockData.name}</span>
         </div>
-        <div className="flex items-baseline gap-3 mt-2">
+        <div className="flex items-baseline gap-3 mt-2!">
           <span className="text-3xl font-semibold">{formatPrice(stockData.price)}</span>
           <span className={`text-lg ${changeColor}`}>
             {stockData.change >= 0 ? '+' : ''}{formatPrice(stockData.change)}
@@ -60,7 +60,7 @@ export const ChartWidget: React.FC<any> = ({ symbol = 'AAPL', interval: initialI
       </div>
 
       {/* Interval Selector */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-4!">
         {(['1D', '1W', '1M', '1Y'] as const).map((int) => (
           <button
             key={int}
@@ -115,7 +115,7 @@ export const ChartWidget: React.FC<any> = ({ symbol = 'AAPL', interval: initialI
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-4 mt-4 text-sm">
+      <div className="grid grid-cols-4 gap-4 mt-4! text-sm">
         <div>
           <div className="text-gray-400">Open</div>
           <div className="font-semibold">{formatPrice(stockData.open)}</div>

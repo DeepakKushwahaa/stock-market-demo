@@ -33,12 +33,40 @@ export const WidgetPanel: React.FC = () => {
     e.dataTransfer.effectAllowed = 'move';
   };
 
-  const handleAddWidget = (widgetId: string, symbol?: string, widgetName?: string) => {
-    console.log('handleAddWidget called with:', { widgetId, symbol, widgetName });
-    const layout = layoutInstance as any;
+  const MAX_WIDGETS = 15;
+  const WIDGETS_PER_ROW = 5;
 
-    console.log('Layout instance:', layout);
-    console.log('Layout initialized:', layout?.isInitialised);
+  // Count total widgets in layout (count stacks, not components)
+  const countWidgets = (item: any): number => {
+    if (!item) return 0;
+    if (item.type === 'stack') return 1;
+    if (item.contentItems) {
+      return item.contentItems.reduce((sum: number, child: any) => sum + countWidgets(child), 0);
+    }
+    return 0;
+  };
+
+  // Find the column container in the layout
+  const findColumn = (item: any): any => {
+    if (!item) return null;
+    if (item.type === 'column') return item;
+    if (item.contentItems) {
+      for (const child of item.contentItems) {
+        const found = findColumn(child);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  // Count stacks in a row
+  const countStacksInRow = (row: any): number => {
+    if (!row || !row.contentItems) return 0;
+    return row.contentItems.filter((item: any) => item.type === 'stack').length;
+  };
+
+  const handleAddWidget = (widgetId: string, symbol?: string, widgetName?: string) => {
+    const layout = layoutInstance as any;
 
     if (!layout || !layout.isInitialised) {
       console.error('Layout instance not available or not initialized');
@@ -46,6 +74,13 @@ export const WidgetPanel: React.FC = () => {
     }
 
     try {
+      // Check if max widgets reached
+      const currentWidgetCount = countWidgets(layout.root);
+      if (currentWidgetCount >= MAX_WIDGETS) {
+        alert(`Maximum ${MAX_WIDGETS} widgets allowed`);
+        return;
+      }
+
       // Determine component type based on widget ID
       let componentName = 'chart';
       if (widgetId.startsWith('chart-')) {
@@ -56,70 +91,61 @@ export const WidgetPanel: React.FC = () => {
         componentName = 'watchlist';
       }
 
-      const newItemConfig = {
+      const componentState = {
+        widgetId: `${widgetId}-${Date.now()}`,
+        ...(symbol && { symbol }),
+      };
+      const title = widgetName || widgetId.toUpperCase();
+
+      // Component config for the widget
+      const componentConfig = {
         type: 'component',
-        componentName: componentName,
-        componentState: {
-          widgetId: `${widgetId}-${Date.now()}`,
-          ...(symbol && { symbol }),
-        },
-        title: widgetName || widgetId.toUpperCase(),
+        componentType: componentName,
+        componentState: componentState,
+        title: title,
+        content: [],
       };
 
-      // Use Golden Layout's addItem method instead of manipulating structure
-      console.log('Adding widget to layout...');
+      // Stack config wrapping the component
+      const stackItemConfig = {
+        type: 'stack',
+        content: [componentConfig]
+      };
 
-      // Golden Layout v2 uses addItem or newItem methods
-      if (layout.addItem) {
-        console.log('Using layout.addItem method');
-        layout.addItem(newItemConfig);
-      } else if (layout.newItem) {
-        console.log('Using layout.newItem method');
-        layout.newItem(newItemConfig);
-      } else {
-        // Fallback: try to add directly to root
-        console.log('Using fallback method');
-        const config = layout.toConfig();
+      // Find or create the column structure
+      const root = layout.root;
+      let column = findColumn(root);
 
-        if (!config.content || config.content.length === 0) {
-          config.content = [{
-            type: 'row',
-            content: [{
-              type: 'stack',
-              content: [newItemConfig]
-            }]
-          }];
-        } else {
-          // Find first stack and add to it
-          const findAndAddToStack = (items: any[]): boolean => {
-            for (const item of items) {
-              if (item.type === 'stack') {
-                if (!item.content) item.content = [];
-                item.content.push(newItemConfig);
-                return true;
-              }
-              if (item.content && findAndAddToStack(item.content)) {
-                return true;
-              }
-            }
-            return false;
-          };
-
-          if (!findAndAddToStack(config.content)) {
-            // No stack found, add to first row
-            if (config.content[0].content) {
-              config.content[0].content.push({
-                type: 'stack',
-                content: [newItemConfig]
-              });
-            }
+      if (!column) {
+        // No column found, use root's first item or create structure
+        if (root.contentItems && root.contentItems.length > 0) {
+          const firstItem = root.contentItems[0];
+          if (firstItem.type === 'row') {
+            firstItem.addItem(stackItemConfig);
+            return;
           }
         }
-
-        // Reload with new config
-        layout.destroy();
-        setTimeout(() => window.location.reload(), 100);
+        // Fallback
+        layout.newComponent(componentName, componentState, title);
+        return;
       }
+
+      // Find last row in column or create one
+      const rows = column.contentItems.filter((item: any) => item.type === 'row');
+      let targetRow = rows.length > 0 ? rows[rows.length - 1] : null;
+
+      if (targetRow && countStacksInRow(targetRow) < WIDGETS_PER_ROW) {
+        // Add to existing row
+        targetRow.addItem(stackItemConfig);
+      } else {
+        // Create new row
+        const newRowConfig = {
+          type: 'row',
+          content: [stackItemConfig]
+        };
+        column.addItem(newRowConfig);
+      }
+
     } catch (error) {
       console.error('Error adding widget:', error);
     }
@@ -137,13 +163,13 @@ export const WidgetPanel: React.FC = () => {
 
   return (
     <div className="fixed right-0 top-0 h-screen w-80 bg-white shadow-2xl overflow-auto z-50 border-l border-gray-200">
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
+      <div className="px-3!">
+        <div className="flex items-center justify-between py-3! sticky top-0 bg-white">
           <h2 className="text-xl font-semibold text-gray-800">Add Widgets</h2>
           <button className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-3!">
           {WidgetDefinitions.map((widget) => (
             <div
               key={widget.id}
@@ -161,24 +187,21 @@ export const WidgetPanel: React.FC = () => {
               </div>
 
               {/* Widget Info */}
-              <div className="p-3">
-                <h3 className="font-semibold text-gray-800 text-sm mb-1">{widget.name}</h3>
+              <div className="p-3!">
+                <h3 className="font-semibold text-gray-800 text-sm mb-1!">{widget.name}</h3>
                 <p className="text-xs text-gray-500">{widget.description}</p>
               </div>
             </div>
           ))}
         </div>
 
-        <div className="mt-6 pt-6 border-t border-gray-200">
+        <div className="mt-4! py-4! border-t border-gray-200">
           <button
             onClick={resetLayout}
-            className="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 py-2.5 px-4 rounded-lg font-medium transition-colors text-sm"
+            className="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 py-2.5! px-4! rounded-lg font-semibold! transition-colors text-sm uppercase cursor-pointer"
           >
             Reset Layout
           </button>
-          <p className="text-xs text-gray-400 mt-2 text-center">
-            Restore default layout
-          </p>
         </div>
       </div>
     </div>

@@ -55,21 +55,21 @@ export const WatchlistWidget: React.FC<any> = ({ symbols: initialSymbols }) => {
   const formatPrice = (price: number) => `$${price.toFixed(2)}`;
 
   return (
-    <div className="h-full flex flex-col bg-gray-900 text-white p-4">
+    <div className="h-full flex flex-col bg-gray-900 text-white p-3!">
       {/* Header */}
-      <div className="mb-4">
-        <h2 className="text-xl font-bold mb-3">Watchlist</h2>
+      <div className="mb-4!">
+        <h2 className="text-xl font-bold mb-3!">Watchlist</h2>
         <form onSubmit={handleAddSymbol} className="flex gap-2">
           <input
             type="text"
             placeholder="Add symbol (e.g. AAPL)"
             value={newSymbol}
             onChange={(e) => setNewSymbol(e.target.value)}
-            className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 text-sm"
+            className="flex-1 px-3! py-2! bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 text-sm"
           />
           <button
             type="submit"
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded font-medium transition-colors text-sm"
+            className="px-4! py-2! bg-blue-600 hover:bg-blue-700 rounded font-medium transition-colors text-sm"
           >
             Add
           </button>
@@ -77,7 +77,7 @@ export const WatchlistWidget: React.FC<any> = ({ symbols: initialSymbols }) => {
       </div>
 
       {/* Stock List */}
-      <div className="flex-1 overflow-auto space-y-2">
+      <div className="flex-1 overflow-auto space-y-2! custom-scrollbar">
         {stocksData.length === 0 ? (
           <div className="text-center text-gray-400 py-8">No stocks in watchlist</div>
         ) : (
@@ -88,7 +88,7 @@ export const WatchlistWidget: React.FC<any> = ({ symbols: initialSymbols }) => {
             return (
               <div
                 key={stock.symbol}
-                className="bg-gray-800 rounded-lg p-3 hover:bg-gray-750 transition-colors"
+                className="bg-gray-800 rounded-lg p-3! hover:bg-gray-750 transition-colors"
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
@@ -115,7 +115,7 @@ export const WatchlistWidget: React.FC<any> = ({ symbols: initialSymbols }) => {
                 </div>
 
                 {/* Additional stats */}
-                <div className="grid grid-cols-3 gap-2 mt-3 text-xs">
+                <div className="grid grid-cols-3 gap-2 mt-3! text-xs">
                   <div>
                     <div className="text-gray-400">Open</div>
                     <div className="font-medium">{formatPrice(stock.open)}</div>
@@ -131,8 +131,8 @@ export const WatchlistWidget: React.FC<any> = ({ symbols: initialSymbols }) => {
                 </div>
 
                 {/* Volume bar */}
-                <div className="mt-2">
-                  <div className="text-xs text-gray-400 mb-1">
+                <div className="mt-2!">
+                  <div className="text-xs text-gray-400 mb-1!">
                     Volume: {(stock.volume / 1000000).toFixed(2)}M
                   </div>
                   <div className="h-1 bg-gray-700 rounded-full overflow-hidden">

@@ -72,16 +72,16 @@ export const ScreenerWidget: React.FC<any> = () => {
   }
 
   return (
-    <div className="h-full flex flex-col bg-gray-900 text-white p-4">
+    <div className="h-full flex flex-col bg-gray-900 text-white p-3!">
       {/* Header */}
-      <div className="mb-4">
-        <h2 className="text-xl font-bold mb-3">Stock Screener</h2>
+      <div className="mb-4!">
+        <h2 className="text-xl font-bold mb-3!">Stock Screener</h2>
         <input
           type="text"
           placeholder="Search by symbol or name..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+          className="w-full px-4! py-2! bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
         />
       </div>
 
@@ -91,7 +91,7 @@ export const ScreenerWidget: React.FC<any> = () => {
           <thead className="sticky top-0 bg-gray-800 z-10">
             <tr className="border-b border-gray-700">
               <th
-                className="px-4 py-3 text-left font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
+                className="px-3! py-2! text-left font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
                 onClick={() => handleSort('symbol')}
               >
                 <div className="flex items-center gap-2">
@@ -99,7 +99,7 @@ export const ScreenerWidget: React.FC<any> = () => {
                 </div>
               </th>
               <th
-                className="px-4 py-3 text-left font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
+                className="px-3! py-2! text-left font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
                 onClick={() => handleSort('name')}
               >
                 <div className="flex items-center gap-2">
@@ -107,7 +107,7 @@ export const ScreenerWidget: React.FC<any> = () => {
                 </div>
               </th>
               <th
-                className="px-4 py-3 text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
+                className="px-3! py-2! text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
                 onClick={() => handleSort('price')}
               >
                 <div className="flex items-center justify-end gap-2">
@@ -115,7 +115,7 @@ export const ScreenerWidget: React.FC<any> = () => {
                 </div>
               </th>
               <th
-                className="px-4 py-3 text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
+                className="px-3! py-2! text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
                 onClick={() => handleSort('change')}
               >
                 <div className="flex items-center justify-end gap-2">
@@ -123,7 +123,7 @@ export const ScreenerWidget: React.FC<any> = () => {
                 </div>
               </th>
               <th
-                className="px-4 py-3 text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
+                className="px-3! py-2! text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
                 onClick={() => handleSort('changePercent')}
               >
                 <div className="flex items-center justify-end gap-2">
@@ -131,7 +131,7 @@ export const ScreenerWidget: React.FC<any> = () => {
                 </div>
               </th>
               <th
-                className="px-4 py-3 text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
+                className="px-3! py-2! text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
                 onClick={() => handleSort('volume')}
               >
                 <div className="flex items-center justify-end gap-2">
@@ -139,7 +139,7 @@ export const ScreenerWidget: React.FC<any> = () => {
                 </div>
               </th>
               <th
-                className="px-4 py-3 text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
+                className="px-3! py-2! text-right font-semibold cursor-pointer hover:bg-gray-700 transition-colors"
                 onClick={() => handleSort('marketCap')}
               >
                 <div className="flex items-center justify-end gap-2">
@@ -156,19 +156,19 @@ export const ScreenerWidget: React.FC<any> = () => {
                   key={stock.symbol}
                   className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors"
                 >
-                  <td className="px-4 py-3 font-medium">{stock.symbol}</td>
-                  <td className="px-4 py-3 text-gray-400">{stock.name}</td>
-                  <td className="px-4 py-3 text-right font-semibold">{formatPrice(stock.price)}</td>
-                  <td className={`px-4 py-3 text-right font-semibold ${changeColor}`}>
+                  <td className="px-3! py-2! font-medium">{stock.symbol}</td>
+                  <td className="px-3! py-2! text-gray-400">{stock.name}</td>
+                  <td className="px-3! py-2! text-right font-semibold">{formatPrice(stock.price)}</td>
+                  <td className={`px-3! py-2! text-right font-semibold ${changeColor}`}>
                     {stock.change >= 0 ? '+' : ''}
                     {formatPrice(stock.change)}
                   </td>
-                  <td className={`px-4 py-3 text-right font-semibold ${changeColor}`}>
+                  <td className={`px-3! py-2! text-right font-semibold ${changeColor}`}>
                     {stock.changePercent >= 0 ? '+' : ''}
                     {stock.changePercent.toFixed(2)}%
                   </td>
-                  <td className="px-4 py-3 text-right text-gray-400">{formatVolume(stock.volume)}</td>
-                  <td className="px-4 py-3 text-right text-gray-400">
+                  <td className="px-3! py-2! text-right text-gray-400">{formatVolume(stock.volume)}</td>
+                  <td className="px-3! py-2! text-right text-gray-400">
                     {formatMarketCap(stock.marketCap)}
                   </td>
                 </tr>

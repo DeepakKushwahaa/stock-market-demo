@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import {GoldenLayout} from 'golden-layout';
+import {GoldenLayout, LayoutConfig} from 'golden-layout';
 import { createRoot } from 'react-dom/client';
 import { useLayout } from '../../contexts/LayoutContext';
 import { WidgetRegistry } from '../widgets';
@@ -15,10 +15,10 @@ export const DashboardLayout: React.FC = () => {
     if (layoutRef.current) return; // Only initialize once
 
     try {
-      // Initialize Golden Layout
-      const layout = new GoldenLayout(layoutConfig, containerRef.current);
+      // Initialize Golden Layout with container first
+      const layout = new GoldenLayout(containerRef.current);
 
-      // Register all widget components
+      // Register all widget components before loading config
       Object.entries(WidgetRegistry).forEach(([name, Component]) => {
         layout.registerComponent(name, (container: any, componentState: any) => {
           // Get the DOM element - Golden Layout v2 uses getElement() which returns jQuery object
@@ -50,8 +50,15 @@ export const DashboardLayout: React.FC = () => {
         });
       });
 
-      // Initialize the layout
-      layout.init();
+      // Load the layout config (either saved or default)
+      // If it's a ResolvedLayoutConfig (from saveLayout), convert it to LayoutConfig
+      let configToLoad = layoutConfig;
+      if (layoutConfig.root) {
+        // It's a ResolvedLayoutConfig, convert it
+        configToLoad = LayoutConfig.fromResolved(layoutConfig);
+      }
+      layout.loadLayout(configToLoad);
+
       layoutRef.current = layout;
       setLayoutInstance(layout);
 
@@ -64,7 +71,8 @@ export const DashboardLayout: React.FC = () => {
           try {
             // Only save if layout is initialized
             if (layout.isInitialised) {
-              const config = layout.toConfig();
+              // Use saveLayout() for serializable config that can be restored
+              const config = layout.saveLayout();
               updateLayout(config);
             }
           } catch (error) {
@@ -117,63 +125,100 @@ export const DashboardLayout: React.FC = () => {
     }
   }, []); // Empty dependency array - only initialize once
 
+  const MAX_WIDGETS = 15;
+  const WIDGETS_PER_ROW = 5;
+
+  // Count total widgets in layout (count stacks, not components)
+  const countWidgets = (item: any): number => {
+    if (!item) return 0;
+    if (item.type === 'stack') return 1;
+    if (item.contentItems) {
+      return item.contentItems.reduce((sum: number, child: any) => sum + countWidgets(child), 0);
+    }
+    return 0;
+  };
+
+  // Find the column container in the layout
+  const findColumn = (item: any): any => {
+    if (!item) return null;
+    if (item.type === 'column') return item;
+    if (item.contentItems) {
+      for (const child of item.contentItems) {
+        const found = findColumn(child);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  // Count stacks in a row
+  const countStacksInRow = (row: any): number => {
+    if (!row || !row.contentItems) return 0;
+    return row.contentItems.filter((item: any) => item.type === 'stack').length;
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const layout = layoutRef.current as any;
     if (!layout || !layout.isInitialised) return;
 
     try {
+      // Check if max widgets reached
+      const currentWidgetCount = countWidgets(layout.root);
+      if (currentWidgetCount >= MAX_WIDGETS) {
+        alert(`Maximum ${MAX_WIDGETS} widgets allowed`);
+        return;
+      }
+
       const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
-      console.log('Drop received:', dragData);
 
-      // Use Golden Layout's addItem method
-      if (layout.addItem) {
-        console.log('Using layout.addItem method for drop');
-        layout.addItem(dragData);
-      } else if (layout.newItem) {
-        console.log('Using layout.newItem method for drop');
-        layout.newItem(dragData);
-      } else {
-        console.log('Using fallback method for drop');
-        const config = layout.toConfig();
+      // Component config
+      const componentConfig = {
+        type: 'component',
+        componentType: dragData.componentName,
+        componentState: dragData.componentState,
+        title: dragData.title,
+        content: [],
+      };
 
-        if (!config.content || config.content.length === 0) {
-          config.content = [{
-            type: 'row',
-            content: [{
-              type: 'stack',
-              content: [dragData]
-            }]
-          }];
-        } else {
-          // Find first stack and add to it
-          const findAndAddToStack = (items: any[]): boolean => {
-            for (const item of items) {
-              if (item.type === 'stack') {
-                if (!item.content) item.content = [];
-                item.content.push(dragData);
-                return true;
-              }
-              if (item.content && findAndAddToStack(item.content)) {
-                return true;
-              }
-            }
-            return false;
-          };
+      // Stack config wrapping the component
+      const stackItemConfig = {
+        type: 'stack',
+        content: [componentConfig]
+      };
 
-          if (!findAndAddToStack(config.content)) {
-            // No stack found, add to first row
-            if (config.content[0]?.content) {
-              config.content[0].content.push({
-                type: 'stack',
-                content: [dragData]
-              });
-            }
+      // Find or create the column structure
+      const root = layout.root;
+      let column = findColumn(root);
+
+      if (!column) {
+        // No column found, use root's first item or create structure
+        if (root.contentItems && root.contentItems.length > 0) {
+          const firstItem = root.contentItems[0];
+          if (firstItem.type === 'row') {
+            firstItem.addItem(stackItemConfig);
+            return;
           }
         }
+        // Fallback
+        layout.newComponent(dragData.componentName, dragData.componentState, dragData.title);
+        return;
+      }
 
-        updateLayout(config);
-        setTimeout(() => window.location.reload(), 100);
+      // Find last row in column or create one
+      const rows = column.contentItems.filter((item: any) => item.type === 'row');
+      let targetRow = rows.length > 0 ? rows[rows.length - 1] : null;
+
+      if (targetRow && countStacksInRow(targetRow) < WIDGETS_PER_ROW) {
+        // Add to existing row
+        targetRow.addItem(stackItemConfig);
+      } else {
+        // Create new row
+        const newRowConfig = {
+          type: 'row',
+          content: [stackItemConfig]
+        };
+        column.addItem(newRowConfig);
       }
     } catch (error) {
       console.error('Error handling drop:', error);
