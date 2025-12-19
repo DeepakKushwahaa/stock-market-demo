@@ -10,9 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "golden-layout": "^2.6.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-grid-layout": "^2.1.0",
     "recharts": "^3.6.0"
   },
   "devDependencies": {
@@ -21,6 +21,7 @@
     "@types/node": "^24.10.4",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
+    "@types/react-grid-layout": "^1.3.6",
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.23",
     "eslint": "^9.39.1",

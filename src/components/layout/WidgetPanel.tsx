@@ -1,154 +1,58 @@
 import React from 'react';
 import { useLayout } from '../../contexts/LayoutContext';
 import { WidgetDefinitions } from '../widgets';
+import { GRID_CONFIG } from '../../utils/layoutDefaults';
+import type { WidgetType, WidgetDragData } from '../../types/gridLayout.types';
 
 export const WidgetPanel: React.FC = () => {
-  const { resetLayout, layoutInstance } = useLayout();
+  const { resetLayout, addWidget, canAddWidget } = useLayout();
 
   const handleDragStart = (e: React.DragEvent, widgetId: string, symbol?: string, widgetName?: string) => {
-    const layout = layoutInstance as any;
-    if (!layout || !layout.isInitialised) return;
-
     // Determine component type
-    let componentName = 'chart';
+    let type: WidgetType = 'chart';
     if (widgetId.startsWith('chart-')) {
-      componentName = 'chart';
+      type = 'chart';
     } else if (widgetId === 'screener') {
-      componentName = 'screener';
+      type = 'screener';
     } else if (widgetId === 'watchlist') {
-      componentName = 'watchlist';
+      type = 'watchlist';
     }
 
-    const dragData = {
-      type: 'component',
-      componentName: componentName,
-      componentState: {
+    const dragData: WidgetDragData = {
+      type,
+      title: widgetName || widgetId.toUpperCase(),
+      props: {
         widgetId: `${widgetId}-${Date.now()}`,
         ...(symbol && { symbol }),
       },
-      title: widgetName || widgetId.toUpperCase(),
     };
 
     e.dataTransfer.setData('text/plain', JSON.stringify(dragData));
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const MAX_WIDGETS = 15;
-  const WIDGETS_PER_ROW = 5;
-
-  // Count total widgets in layout (count stacks, not components)
-  const countWidgets = (item: any): number => {
-    if (!item) return 0;
-    if (item.type === 'stack') return 1;
-    if (item.contentItems) {
-      return item.contentItems.reduce((sum: number, child: any) => sum + countWidgets(child), 0);
-    }
-    return 0;
-  };
-
-  // Find the column container in the layout
-  const findColumn = (item: any): any => {
-    if (!item) return null;
-    if (item.type === 'column') return item;
-    if (item.contentItems) {
-      for (const child of item.contentItems) {
-        const found = findColumn(child);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
-  // Count stacks in a row
-  const countStacksInRow = (row: any): number => {
-    if (!row || !row.contentItems) return 0;
-    return row.contentItems.filter((item: any) => item.type === 'stack').length;
+    e.dataTransfer.effectAllowed = 'copy';
   };
 
   const handleAddWidget = (widgetId: string, symbol?: string, widgetName?: string) => {
-    const layout = layoutInstance as any;
-
-    if (!layout || !layout.isInitialised) {
-      console.error('Layout instance not available or not initialized');
+    if (!canAddWidget()) {
+      alert(`Maximum ${GRID_CONFIG.maxWidgets} widgets allowed`);
       return;
     }
 
-    try {
-      // Check if max widgets reached
-      const currentWidgetCount = countWidgets(layout.root);
-      if (currentWidgetCount >= MAX_WIDGETS) {
-        alert(`Maximum ${MAX_WIDGETS} widgets allowed`);
-        return;
-      }
-
-      // Determine component type based on widget ID
-      let componentName = 'chart';
-      if (widgetId.startsWith('chart-')) {
-        componentName = 'chart';
-      } else if (widgetId === 'screener') {
-        componentName = 'screener';
-      } else if (widgetId === 'watchlist') {
-        componentName = 'watchlist';
-      }
-
-      const componentState = {
-        widgetId: `${widgetId}-${Date.now()}`,
-        ...(symbol && { symbol }),
-      };
-      const title = widgetName || widgetId.toUpperCase();
-
-      // Component config for the widget
-      const componentConfig = {
-        type: 'component',
-        componentType: componentName,
-        componentState: componentState,
-        title: title,
-        content: [],
-      };
-
-      // Stack config wrapping the component
-      const stackItemConfig = {
-        type: 'stack',
-        content: [componentConfig]
-      };
-
-      // Find or create the column structure
-      const root = layout.root;
-      let column = findColumn(root);
-
-      if (!column) {
-        // No column found, use root's first item or create structure
-        if (root.contentItems && root.contentItems.length > 0) {
-          const firstItem = root.contentItems[0];
-          if (firstItem.type === 'row') {
-            firstItem.addItem(stackItemConfig);
-            return;
-          }
-        }
-        // Fallback
-        layout.newComponent(componentName, componentState, title);
-        return;
-      }
-
-      // Find last row in column or create one
-      const rows = column.contentItems.filter((item: any) => item.type === 'row');
-      let targetRow = rows.length > 0 ? rows[rows.length - 1] : null;
-
-      if (targetRow && countStacksInRow(targetRow) < WIDGETS_PER_ROW) {
-        // Add to existing row
-        targetRow.addItem(stackItemConfig);
-      } else {
-        // Create new row
-        const newRowConfig = {
-          type: 'row',
-          content: [stackItemConfig]
-        };
-        column.addItem(newRowConfig);
-      }
-
-    } catch (error) {
-      console.error('Error adding widget:', error);
+    // Determine component type based on widget ID
+    let type: WidgetType = 'chart';
+    if (widgetId.startsWith('chart-')) {
+      type = 'chart';
+    } else if (widgetId === 'screener') {
+      type = 'screener';
+    } else if (widgetId === 'watchlist') {
+      type = 'watchlist';
     }
+
+    const props = {
+      widgetId: `${widgetId}-${Date.now()}`,
+      ...(symbol && { symbol }),
+    };
+
+    addWidget(type, widgetName || widgetId.toUpperCase(), props);
   };
 
   const getWidgetPreviewImage = (widgetId: string) => {

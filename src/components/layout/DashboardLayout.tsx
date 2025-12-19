@@ -1,242 +1,142 @@
-import React, { useEffect, useRef } from 'react';
-import {GoldenLayout, LayoutConfig} from 'golden-layout';
-import { createRoot } from 'react-dom/client';
+import React, { useCallback, useRef, useState, useEffect } from 'react';
+import GridLayout from 'react-grid-layout';
 import { useLayout } from '../../contexts/LayoutContext';
+import { WidgetWrapper } from './WidgetWrapper';
 import { WidgetRegistry } from '../widgets';
+import { GRID_CONFIG, DEFAULT_WIDGET_SIZES } from '../../utils/layoutDefaults';
+import type { WidgetDragData, GridItemLayout } from '../../types/gridLayout.types';
+
+// Cast GridLayout to any to work around type definition issues
+const RGL = GridLayout as any;
 
 export const DashboardLayout: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const layoutRef = useRef<any | null>(null);
-  const rootsRef = useRef<Map<string, any>>(new Map());
-  const { layoutConfig, updateLayout, setLayoutInstance } = useLayout();
+  const [containerWidth, setContainerWidth] = useState(0);
+  const { layouts, widgets, updateLayouts, removeWidget, addWidgetAtPosition, canAddWidget } = useLayout();
 
+  // Track container width for GridLayout
   useEffect(() => {
-    if (!containerRef.current) return;
-    if (layoutRef.current) return; // Only initialize once
+    const updateWidth = () => {
+      if (containerRef.current) {
+        setContainerWidth(containerRef.current.offsetWidth);
+      }
+    };
+
+    updateWidth();
+
+    const resizeObserver = new ResizeObserver(updateWidth);
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
+    }
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  const handleLayoutChange = useCallback((newLayout: GridItemLayout[]) => {
+    // Update layouts while preserving minW/minH
+    const updatedLayouts: GridItemLayout[] = newLayout.map((item: GridItemLayout) => {
+      const existingLayout = layouts.find(l => l.i === item.i);
+      return {
+        ...item,
+        minW: existingLayout?.minW ?? item.minW,
+        minH: existingLayout?.minH ?? item.minH,
+      };
+    });
+    updateLayouts(updatedLayouts);
+  }, [layouts, updateLayouts]);
+
+  const handleDrop = useCallback((
+    _layout: GridItemLayout[],
+    layoutItem: GridItemLayout,
+    event: Event
+  ) => {
+    const e = event as DragEvent;
+    const dragDataStr = e.dataTransfer?.getData('text/plain');
+
+    if (!dragDataStr) return;
 
     try {
-      // Initialize Golden Layout with container first
-      const layout = new GoldenLayout(containerRef.current);
+      const dragData: WidgetDragData = JSON.parse(dragDataStr);
 
-      // Register all widget components before loading config
-      Object.entries(WidgetRegistry).forEach(([name, Component]) => {
-        layout.registerComponent(name, (container: any, componentState: any) => {
-          // Get the DOM element - Golden Layout v2 uses getElement() which returns jQuery object
-          const elementArray = container.getElement();
-          const element = elementArray && elementArray.length > 0 ? elementArray[0] : elementArray;
-
-          if (!element || !(element instanceof HTMLElement)) {
-            console.error('Invalid container element for component:', name);
-            return;
-          }
-
-          // Create a unique key for this component instance
-          const componentKey = `${name}-${Date.now()}-${Math.random()}`;
-
-          // Create React root and render component
-          const root = createRoot(element);
-          rootsRef.current.set(componentKey, root);
-
-          root.render(<Component {...componentState} />);
-
-          // Cleanup when container is destroyed
-          container.on('destroy', () => {
-            const rootToDestroy = rootsRef.current.get(componentKey);
-            if (rootToDestroy) {
-              rootToDestroy.unmount();
-              rootsRef.current.delete(componentKey);
-            }
-          });
-        });
-      });
-
-      // Load the layout config (either saved or default)
-      // If it's a ResolvedLayoutConfig (from saveLayout), convert it to LayoutConfig
-      let configToLoad = layoutConfig;
-      if (layoutConfig.root) {
-        // It's a ResolvedLayoutConfig, convert it
-        configToLoad = LayoutConfig.fromResolved(layoutConfig);
-      }
-      layout.loadLayout(configToLoad);
-
-      layoutRef.current = layout;
-      setLayoutInstance(layout);
-
-      // Save layout configuration on state changes
-      let saveTimeout: any;
-      const handleStateChange = () => {
-        // Debounce save to avoid excessive localStorage writes
-        clearTimeout(saveTimeout);
-        saveTimeout = setTimeout(() => {
-          try {
-            // Only save if layout is initialized
-            if (layout.isInitialised) {
-              // Use saveLayout() for serializable config that can be restored
-              const config = layout.saveLayout();
-              updateLayout(config);
-            }
-          } catch (error) {
-            console.error('Error saving layout:', error);
-          }
-        }, 500);
-      };
-
-      layout.on('stateChanged', handleStateChange);
-
-      // Handle window resize
-      const handleResize = () => {
-        if (layoutRef.current && containerRef.current) {
-          layoutRef.current.updateSize(
-            containerRef.current.offsetWidth,
-            containerRef.current.offsetHeight
-          );
-        }
-      };
-
-      window.addEventListener('resize', handleResize);
-
-      // Cleanup
-      return () => {
-        window.removeEventListener('resize', handleResize);
-        clearTimeout(saveTimeout);
-
-        // Unmount all React roots
-        rootsRef.current.forEach((root) => {
-          try {
-            root.unmount();
-          } catch (error) {
-            console.error('Error unmounting root:', error);
-          }
-        });
-        rootsRef.current.clear();
-
-        // Destroy Golden Layout
-        if (layoutRef.current) {
-          try {
-            layoutRef.current.destroy();
-          } catch (error) {
-            console.error('Error destroying layout:', error);
-          }
-          layoutRef.current = null;
-        }
-      };
-    } catch (error) {
-      console.error('Error initializing Golden Layout:', error);
-    }
-  }, []); // Empty dependency array - only initialize once
-
-  const MAX_WIDGETS = 15;
-  const WIDGETS_PER_ROW = 5;
-
-  // Count total widgets in layout (count stacks, not components)
-  const countWidgets = (item: any): number => {
-    if (!item) return 0;
-    if (item.type === 'stack') return 1;
-    if (item.contentItems) {
-      return item.contentItems.reduce((sum: number, child: any) => sum + countWidgets(child), 0);
-    }
-    return 0;
-  };
-
-  // Find the column container in the layout
-  const findColumn = (item: any): any => {
-    if (!item) return null;
-    if (item.type === 'column') return item;
-    if (item.contentItems) {
-      for (const child of item.contentItems) {
-        const found = findColumn(child);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
-  // Count stacks in a row
-  const countStacksInRow = (row: any): number => {
-    if (!row || !row.contentItems) return 0;
-    return row.contentItems.filter((item: any) => item.type === 'stack').length;
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const layout = layoutRef.current as any;
-    if (!layout || !layout.isInitialised) return;
-
-    try {
-      // Check if max widgets reached
-      const currentWidgetCount = countWidgets(layout.root);
-      if (currentWidgetCount >= MAX_WIDGETS) {
-        alert(`Maximum ${MAX_WIDGETS} widgets allowed`);
+      if (!canAddWidget()) {
+        alert(`Maximum ${GRID_CONFIG.maxWidgets} widgets allowed`);
         return;
       }
 
-      const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
-
-      // Component config
-      const componentConfig = {
-        type: 'component',
-        componentType: dragData.componentName,
-        componentState: dragData.componentState,
-        title: dragData.title,
-        content: [],
-      };
-
-      // Stack config wrapping the component
-      const stackItemConfig = {
-        type: 'stack',
-        content: [componentConfig]
-      };
-
-      // Find or create the column structure
-      const root = layout.root;
-      let column = findColumn(root);
-
-      if (!column) {
-        // No column found, use root's first item or create structure
-        if (root.contentItems && root.contentItems.length > 0) {
-          const firstItem = root.contentItems[0];
-          if (firstItem.type === 'row') {
-            firstItem.addItem(stackItemConfig);
-            return;
-          }
-        }
-        // Fallback
-        layout.newComponent(dragData.componentName, dragData.componentState, dragData.title);
-        return;
-      }
-
-      // Find last row in column or create one
-      const rows = column.contentItems.filter((item: any) => item.type === 'row');
-      let targetRow = rows.length > 0 ? rows[rows.length - 1] : null;
-
-      if (targetRow && countStacksInRow(targetRow) < WIDGETS_PER_ROW) {
-        // Add to existing row
-        targetRow.addItem(stackItemConfig);
-      } else {
-        // Create new row
-        const newRowConfig = {
-          type: 'row',
-          content: [stackItemConfig]
-        };
-        column.addItem(newRowConfig);
-      }
+      addWidgetAtPosition(
+        dragData.type,
+        dragData.title,
+        dragData.props,
+        layoutItem.x,
+        layoutItem.y
+      );
     } catch (error) {
       console.error('Error handling drop:', error);
     }
-  };
+  }, [addWidgetAtPosition, canAddWidget]);
 
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
+    e.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  // Dropping item placeholder
+  const droppingItem = {
+    i: '__dropping-elem__',
+    x: 0,
+    y: 0,
+    w: DEFAULT_WIDGET_SIZES.chart.w,
+    h: DEFAULT_WIDGET_SIZES.chart.h,
   };
 
   return (
     <div
       ref={containerRef}
-      className="w-full h-full"
+      className="w-full h-full overflow-auto bg-gray-900"
       style={{ height: '100vh', width: 'calc(100vw - 320px)' }}
-      onDrop={handleDrop}
       onDragOver={handleDragOver}
-    />
+    >
+      {containerWidth > 0 && (
+        <RGL
+          className="layout"
+          layout={layouts}
+          cols={GRID_CONFIG.cols}
+          rowHeight={GRID_CONFIG.rowHeight}
+          width={containerWidth}
+          margin={GRID_CONFIG.margin}
+          containerPadding={GRID_CONFIG.containerPadding}
+          onLayoutChange={handleLayoutChange}
+          onDrop={handleDrop}
+          isDroppable={true}
+          droppingItem={droppingItem}
+          draggableHandle=".widget-drag-handle"
+          resizeHandles={['se', 'sw', 'ne', 'nw', 'e', 'w', 'n', 's']}
+          useCSSTransforms={true}
+          compactType="vertical"
+          preventCollision={false}
+        >
+          {widgets.map(widget => {
+            const WidgetComponent = WidgetRegistry[widget.type as keyof typeof WidgetRegistry];
+            if (!WidgetComponent) {
+              console.warn(`Unknown widget type: ${widget.type}`);
+              return null;
+            }
+
+            return (
+              <div key={widget.i}>
+                <WidgetWrapper
+                  title={widget.title}
+                  onClose={() => removeWidget(widget.i)}
+                >
+                  <WidgetComponent {...widget.props} />
+                </WidgetWrapper>
+              </div>
+            );
+          })}
+        </RGL>
+      )}
+    </div>
   );
 };
