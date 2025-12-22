@@ -1,4 +1,4 @@
-import type { DashboardLayoutState, GridConfig, WidgetSizeConfig, GridItemLayout, WidgetType } from '../types/gridLayout.types';
+import type { DashboardLayoutState, GridConfig, WidgetSizeConfig, GridItemLayout, WidgetType, LayoutPreset, PresetName } from '../types/gridLayout.types';
 
 // Grid configuration constants
 export const GRID_CONFIG: GridConfig = {
@@ -78,4 +78,49 @@ export const createLayoutItem = (
     minW: size.minW,
     minH: size.minH,
   };
+};
+
+// Layout presets for quick setup
+export const LAYOUT_PRESETS: Record<PresetName, LayoutPreset> = {
+  trading: {
+    name: 'Trading',
+    description: 'Optimized for active trading with chart and watchlist',
+    icon: '📊',
+    layouts: [
+      { i: 'chart-trading-1', x: 0, y: 0, w: 8, h: 4, minW: 3, minH: 3 },
+      { i: 'watchlist-trading-1', x: 8, y: 0, w: 4, h: 4, minW: 2, minH: 3 },
+    ],
+    widgets: [
+      { i: 'chart-trading-1', type: 'chart', title: 'AAPL Chart', props: { symbol: 'AAPL' } },
+      { i: 'watchlist-trading-1', type: 'watchlist', title: 'Watchlist', props: {} },
+    ],
+  },
+  analysis: {
+    name: 'Analysis',
+    description: 'Multiple charts with screener for market analysis',
+    icon: '📈',
+    layouts: [
+      { i: 'chart-analysis-1', x: 0, y: 0, w: 6, h: 4, minW: 3, minH: 3 },
+      { i: 'chart-analysis-2', x: 6, y: 0, w: 6, h: 4, minW: 3, minH: 3 },
+      { i: 'screener-analysis-1', x: 0, y: 4, w: 12, h: 3, minW: 4, minH: 3 },
+    ],
+    widgets: [
+      { i: 'chart-analysis-1', type: 'chart', title: 'AAPL Chart', props: { symbol: 'AAPL' } },
+      { i: 'chart-analysis-2', type: 'chart', title: 'GOOGL Chart', props: { symbol: 'GOOGL' } },
+      { i: 'screener-analysis-1', type: 'screener', title: 'Screener', props: {} },
+    ],
+  },
+  compact: {
+    name: 'Compact',
+    description: 'Minimal layout for quick overview',
+    icon: '📱',
+    layouts: [
+      { i: 'chart-compact-1', x: 0, y: 0, w: 6, h: 3, minW: 3, minH: 3 },
+      { i: 'watchlist-compact-1', x: 6, y: 0, w: 6, h: 3, minW: 2, minH: 3 },
+    ],
+    widgets: [
+      { i: 'chart-compact-1', type: 'chart', title: 'AAPL Chart', props: { symbol: 'AAPL' } },
+      { i: 'watchlist-compact-1', type: 'watchlist', title: 'Watchlist', props: {} },
+    ],
+  },
 };

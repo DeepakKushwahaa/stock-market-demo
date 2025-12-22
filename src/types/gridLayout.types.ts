@@ -57,3 +57,15 @@ export interface WidgetSizeConfig {
   minW: number;
   minH: number;
 }
+
+// Layout preset type
+export type PresetName = 'trading' | 'analysis' | 'compact';
+
+// Layout preset configuration
+export interface LayoutPreset {
+  name: string;
+  description: string;
+  icon: string;
+  layouts: GridItemLayout[];
+  widgets: WidgetInstance[];
+}

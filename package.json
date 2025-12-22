@@ -10,9 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@eleung/react-grid-layout": "^1.7.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-grid-layout": "^2.1.0",
     "recharts": "^3.6.0"
   },
   "devDependencies": {

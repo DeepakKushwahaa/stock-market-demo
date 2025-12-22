@@ -14,7 +14,7 @@ export const WidgetWrapper: React.FC<WidgetWrapperProps> = ({
   return (
     <div className="h-full flex flex-col bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
       {/* Header - acts as drag handle */}
-      <div className="widget-drag-handle flex items-center justify-between px-3 py-2 bg-gradient-to-b from-gray-700 to-gray-800 cursor-move select-none border-b border-gray-600">
+      <div className="widget-drag-handle flex items-center justify-between px-3! py-2! bg-gradient-to-b from-gray-700 to-gray-800 cursor-move select-none border-b border-gray-600">
         {/* Drag indicator */}
         <div className="flex items-center gap-2">
           <div className="flex flex-col gap-0.5 opacity-40">
@@ -32,11 +32,14 @@ export const WidgetWrapper: React.FC<WidgetWrapperProps> = ({
 
         {/* Close button */}
         <button
+          type="button"
+          onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
+            e.preventDefault();
             onClose();
           }}
-          className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-600 text-gray-400 hover:text-white transition-colors"
+          className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-600 text-gray-400 hover:text-white transition-colors cursor-pointer"
           title="Close widget"
         >
           <svg
