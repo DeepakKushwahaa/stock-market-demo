@@ -26,7 +26,7 @@ export const DashboardLayout: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
-  const { layouts, widgets, updateLayouts, removeWidget, addWidget, setMaxRows, previewWidget, newlyAddedWidgetId } = useLayout();
+  const { layouts, widgets, updateLayouts, removeWidget, addWidget, setMaxRows, previewWidget, newlyAddedWidgetId, maximizedWidgetId, toggleMaximizeWidget } = useLayout();
 
   // Store the last valid layout to revert to if resize pushes widgets outside viewport
   const lastValidLayoutRef = useRef<GridItemLayout[]>(layouts);
@@ -890,6 +890,8 @@ export const DashboardLayout: React.FC = () => {
                   <WidgetWrapper
                     title={widget.title}
                     onClose={() => removeWidget(widget.i)}
+                    onToggleMaximize={() => toggleMaximizeWidget(widget.i)}
+                    isMaximized={maximizedWidgetId === widget.i}
                     isHighlighted={isNewlyAdded}
                   >
                     <WidgetComponent {...widget.props} />
@@ -900,6 +902,28 @@ export const DashboardLayout: React.FC = () => {
           </RGL>
         </div>
       )}
+
+      {/* Maximized widget overlay */}
+      {maximizedWidgetId && (() => {
+        const maximizedWidget = widgets.find(w => w.i === maximizedWidgetId);
+        if (!maximizedWidget) return null;
+        const WidgetComponent = WidgetRegistry[maximizedWidget.type as keyof typeof WidgetRegistry];
+        if (!WidgetComponent) return null;
+
+        return (
+          <div className="absolute inset-2.5 z-50">
+            <WidgetWrapper
+              title={maximizedWidget.title}
+              onClose={() => removeWidget(maximizedWidget.i)}
+              onToggleMaximize={() => toggleMaximizeWidget(maximizedWidget.i)}
+              isMaximized={true}
+              isHighlighted={false}
+            >
+              <WidgetComponent {...maximizedWidget.props} />
+            </WidgetWrapper>
+          </div>
+        );
+      })()}
     </div>
   );
 };

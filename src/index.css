@@ -66,3 +66,98 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+
+/* React Grid Layout Resize Handles - Visible border lines */
+.react-grid-item > .react-resizable-handle {
+  position: absolute;
+  background-color: #cbd5e1;
+  opacity: 0.6;
+  z-index: 20;
+  transition: all 0.2s ease;
+}
+
+.react-grid-item > .react-resizable-handle:hover {
+  background-color: #60a5fa;
+  opacity: 1;
+}
+
+/* Top edge handle - full width line */
+.react-grid-item > .react-resizable-handle-n {
+  top: 0;
+  left: 4px;
+  right: 4px;
+  height: 4px;
+  width: auto !important;
+  cursor: n-resize;
+  border-radius: 0 0 2px 2px;
+}
+
+/* Bottom edge handle - full width line */
+.react-grid-item > .react-resizable-handle-s {
+  bottom: 0;
+  left: 4px;
+  right: 4px;
+  height: 4px;
+  width: auto !important;
+  cursor: s-resize;
+  border-radius: 2px 2px 0 0;
+}
+
+/* Right edge handle - full height line */
+.react-grid-item > .react-resizable-handle-e {
+  right: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 4px;
+  height: auto !important;
+  cursor: e-resize;
+  border-radius: 2px 0 0 2px;
+}
+
+/* Left edge handle - full height line */
+.react-grid-item > .react-resizable-handle-w {
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 4px;
+  height: auto !important;
+  cursor: w-resize;
+  border-radius: 0 2px 2px 0;
+}
+
+/* Corner handles */
+.react-grid-item > .react-resizable-handle-se {
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  cursor: se-resize;
+  border-radius: 4px 0 0 0;
+}
+
+.react-grid-item > .react-resizable-handle-sw {
+  bottom: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  cursor: sw-resize;
+  border-radius: 0 4px 0 0;
+}
+
+.react-grid-item > .react-resizable-handle-ne {
+  top: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  cursor: ne-resize;
+  border-radius: 0 0 0 4px;
+}
+
+.react-grid-item > .react-resizable-handle-nw {
+  top: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nw-resize;
+  border-radius: 0 0 4px 0;
+}

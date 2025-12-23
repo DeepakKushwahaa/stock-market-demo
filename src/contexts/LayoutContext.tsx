@@ -36,6 +36,9 @@ interface LayoutContextType {
   setPreviewWidget: (type: WidgetType | null, title?: string) => void;
   // Newly added widget highlight
   newlyAddedWidgetId: string | null;
+  // Maximize/minimize widget
+  maximizedWidgetId: string | null;
+  toggleMaximizeWidget: (widgetId: string) => void;
 }
 
 const LayoutContext = createContext<LayoutContextType | undefined>(undefined);
@@ -84,6 +87,7 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
   const [maxRows, setMaxRowsState] = useState<number>(10);
   const [previewWidget, setPreviewWidgetState] = useState<PreviewWidget | null>(null);
   const [newlyAddedWidgetId, setNewlyAddedWidgetId] = useState<string | null>(null);
+  const [maximizedWidgetId, setMaximizedWidgetId] = useState<string | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -308,6 +312,10 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     saveState(newLayouts, newWidgets);
   }, [saveState]);
 
+  const toggleMaximizeWidget = useCallback((widgetId: string) => {
+    setMaximizedWidgetId(prev => prev === widgetId ? null : widgetId);
+  }, []);
+
   const value: LayoutContextType = {
     layouts,
     widgets,
@@ -325,6 +333,8 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     previewWidget,
     setPreviewWidget,
     newlyAddedWidgetId,
+    maximizedWidgetId,
+    toggleMaximizeWidget,
   };
 
   return <LayoutContext.Provider value={value}>{children}</LayoutContext.Provider>;
