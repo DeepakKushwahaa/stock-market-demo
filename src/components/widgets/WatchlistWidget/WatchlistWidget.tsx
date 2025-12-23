@@ -55,21 +55,20 @@ export const WatchlistWidget: React.FC<any> = ({ symbols: initialSymbols }) => {
   const formatPrice = (price: number) => `$${price.toFixed(2)}`;
 
   return (
-    <div className="h-full flex flex-col bg-gray-900 text-white p-3!">
+    <div className="h-full flex flex-col bg-white text-slate-800 p-4!">
       {/* Header */}
-      <div className="mb-4!">
-        <h2 className="text-xl font-bold mb-3!">Watchlist</h2>
+      <div className="mb-3!">
         <form onSubmit={handleAddSymbol} className="flex gap-2">
           <input
             type="text"
             placeholder="Add symbol (e.g. AAPL)"
             value={newSymbol}
             onChange={(e) => setNewSymbol(e.target.value)}
-            className="flex-1 px-3! py-2! bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 text-sm"
+            className="flex-1 px-3! py-1.5! bg-slate-50 border border-slate-200 rounded-lg text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-sm transition-all"
           />
           <button
             type="submit"
-            className="px-4! py-2! bg-blue-600 hover:bg-blue-700 rounded font-medium transition-colors text-sm"
+            className="px-3! py-1.5! bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-medium transition-all text-sm shadow-sm"
           >
             Add
           </button>
@@ -77,36 +76,39 @@ export const WatchlistWidget: React.FC<any> = ({ symbols: initialSymbols }) => {
       </div>
 
       {/* Stock List */}
-      <div className="flex-1 overflow-auto space-y-2! custom-scrollbar">
+      <div className="flex-1 overflow-auto space-y-2!">
         {stocksData.length === 0 ? (
-          <div className="text-center text-gray-400 py-8">No stocks in watchlist</div>
+          <div className="text-center text-slate-400 py-8!">No stocks in watchlist</div>
         ) : (
           stocksData.map((stock) => {
-            const changeColor = stock.change >= 0 ? 'text-green-500' : 'text-red-500';
-            const bgColor = stock.change >= 0 ? 'bg-green-500/10' : 'bg-red-500/10';
+            const changeColor = stock.change >= 0 ? 'text-emerald-600' : 'text-rose-600';
+            const bgColor = stock.change >= 0 ? 'bg-emerald-500' : 'bg-rose-500';
+            const lightBgColor = stock.change >= 0 ? 'bg-emerald-50' : 'bg-rose-50';
 
             return (
               <div
                 key={stock.symbol}
-                className="bg-gray-800 rounded-lg p-3! hover:bg-gray-750 transition-colors"
+                className={`${lightBgColor} rounded-xl p-3! hover:shadow-sm transition-all border border-slate-100`}
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <h3 className="font-bold text-lg">{stock.symbol}</h3>
+                      <h3 className="font-bold text-sm text-slate-800">{stock.symbol}</h3>
                       <button
                         onClick={() => handleRemove(stock.symbol)}
-                        className="text-gray-400 hover:text-red-500 transition-colors"
+                        className="text-slate-400 hover:text-rose-500 transition-colors text-xs"
                         title="Remove from watchlist"
                       >
-                        ✕
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
                       </button>
                     </div>
-                    <p className="text-gray-400 text-sm truncate">{stock.name}</p>
+                    <p className="text-slate-500 text-xs truncate">{stock.name}</p>
                   </div>
                   <div className="text-right">
-                    <div className="font-semibold text-lg">{formatPrice(stock.price)}</div>
-                    <div className={`text-sm font-medium ${changeColor}`}>
+                    <div className="font-semibold text-sm text-slate-800">{formatPrice(stock.price)}</div>
+                    <div className={`text-xs font-medium ${changeColor}`}>
                       {stock.change >= 0 ? '+' : ''}
                       {formatPrice(stock.change)} ({stock.change >= 0 ? '+' : ''}
                       {stock.changePercent.toFixed(2)}%)
@@ -115,29 +117,29 @@ export const WatchlistWidget: React.FC<any> = ({ symbols: initialSymbols }) => {
                 </div>
 
                 {/* Additional stats */}
-                <div className="grid grid-cols-3 gap-2 mt-3! text-xs">
+                <div className="grid grid-cols-3 gap-2 mt-2! text-xs">
                   <div>
-                    <div className="text-gray-400">Open</div>
-                    <div className="font-medium">{formatPrice(stock.open)}</div>
+                    <div className="text-slate-500">Open</div>
+                    <div className="font-medium text-slate-700">{formatPrice(stock.open)}</div>
                   </div>
                   <div>
-                    <div className="text-gray-400">High</div>
-                    <div className="font-medium text-green-400">{formatPrice(stock.high)}</div>
+                    <div className="text-slate-500">High</div>
+                    <div className="font-medium text-emerald-600">{formatPrice(stock.high)}</div>
                   </div>
                   <div>
-                    <div className="text-gray-400">Low</div>
-                    <div className="font-medium text-red-400">{formatPrice(stock.low)}</div>
+                    <div className="text-slate-500">Low</div>
+                    <div className="font-medium text-rose-600">{formatPrice(stock.low)}</div>
                   </div>
                 </div>
 
                 {/* Volume bar */}
                 <div className="mt-2!">
-                  <div className="text-xs text-gray-400 mb-1!">
+                  <div className="text-xs text-slate-500 mb-1!">
                     Volume: {(stock.volume / 1000000).toFixed(2)}M
                   </div>
-                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden">
+                  <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
                     <div
-                      className={`h-full ${bgColor} rounded-full`}
+                      className={`h-full ${bgColor} rounded-full transition-all`}
                       style={{ width: `${Math.min((stock.volume / 50000000) * 100, 100)}%` }}
                     />
                   </div>

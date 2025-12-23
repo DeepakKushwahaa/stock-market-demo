@@ -23,52 +23,52 @@ export const ChartWidget: React.FC<any> = ({ symbol = 'AAPL', interval: initialI
 
   if (stockLoading || chartLoading) {
     return (
-      <div className="h-full flex items-center justify-center bg-gray-900">
-        <div className="text-gray-400">Loading...</div>
+      <div className="h-full flex items-center justify-center bg-white">
+        <div className="text-slate-400">Loading...</div>
       </div>
     );
   }
 
   if (!stockData) {
     return (
-      <div className="h-full flex items-center justify-center bg-gray-900">
-        <div className="text-gray-400">No data available</div>
+      <div className="h-full flex items-center justify-center bg-white">
+        <div className="text-slate-400">No data available</div>
       </div>
     );
   }
 
-  const changeColor = stockData.change >= 0 ? 'text-green-500' : 'text-red-500';
-  const lineColor = stockData.change >= 0 ? '#10b981' : '#ef4444';
+  const changeColor = stockData.change >= 0 ? 'text-emerald-600' : 'text-rose-600';
+  const lineColor = stockData.change >= 0 ? '#10b981' : '#f43f5e';
 
   return (
-    <div className="h-full flex flex-col bg-gray-900 text-white p-3!">
+    <div className="h-full flex flex-col bg-white text-slate-800 p-4!">
       {/* Header */}
-      <div className="mb-4!">
+      <div className="mb-3!">
         <div className="flex items-baseline gap-2">
-          <h2 className="text-2xl font-bold">{symbol}</h2>
-          <span className="text-gray-400 text-sm">{stockData.name}</span>
+          <h2 className="text-sm font-bold text-slate-800">{symbol}</h2>
+          <span className="text-slate-500 text-xs">{stockData.name}</span>
         </div>
-        <div className="flex items-baseline gap-3 mt-2!">
-          <span className="text-3xl font-semibold">{formatPrice(stockData.price)}</span>
-          <span className={`text-lg ${changeColor}`}>
+        <div className="flex items-baseline gap-3 mt-1!">
+          <span className="text-md font-semibold text-slate-900">{formatPrice(stockData.price)}</span>
+          <span className={`text-xs font-medium ${changeColor}`}>
             {stockData.change >= 0 ? '+' : ''}{formatPrice(stockData.change)}
           </span>
-          <span className={`text-lg ${changeColor}`}>
+          <span className={`text-xs ${changeColor}`}>
             ({stockData.changePercent >= 0 ? '+' : ''}{stockData.changePercent.toFixed(2)}%)
           </span>
         </div>
       </div>
 
       {/* Interval Selector */}
-      <div className="flex gap-2 mb-4!">
+      <div className="flex gap-1.5 mb-3!">
         {(['1D', '1W', '1M', '1Y'] as const).map((int) => (
           <button
             key={int}
             onClick={() => setInterval(int)}
-            className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+            className={`px-2! py-1! rounded-md text-xs font-semibold transition-all ${
               interval === int
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                ? 'bg-emerald-500 text-white shadow-sm'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
             {int}
@@ -80,24 +80,25 @@ export const ChartWidget: React.FC<any> = ({ symbol = 'AAPL', interval: initialI
       <div className="flex-1 min-h-0">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
             <XAxis
               dataKey="timestamp"
               tickFormatter={formatDate}
-              stroke="#9ca3af"
-              style={{ fontSize: '12px' }}
+              stroke="#94a3b8"
+              style={{ fontSize: '11px' }}
             />
             <YAxis
               tickFormatter={(value) => `$${value.toFixed(0)}`}
-              stroke="#9ca3af"
-              style={{ fontSize: '12px' }}
+              stroke="#94a3b8"
+              style={{ fontSize: '11px' }}
             />
             <Tooltip
               contentStyle={{
-                backgroundColor: '#1f2937',
-                border: '1px solid #374151',
-                borderRadius: '6px',
-                color: '#fff',
+                backgroundColor: '#fff',
+                border: '1px solid #e2e8f0',
+                borderRadius: '8px',
+                color: '#334155',
+                boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)',
               }}
               labelFormatter={(label) => formatDate(Number(label))}
               formatter={(value: any) => [formatPrice(value), 'Price']}
@@ -115,22 +116,22 @@ export const ChartWidget: React.FC<any> = ({ symbol = 'AAPL', interval: initialI
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-4 mt-4! text-sm">
+      <div className="grid grid-cols-4 gap-3 mt-3! pt-3! border-t border-slate-100">
         <div>
-          <div className="text-gray-400">Open</div>
-          <div className="font-semibold">{formatPrice(stockData.open)}</div>
+          <div className="text-slate-500 text-xs">Open</div>
+          <div className="font-semibold text-slate-700 text-sm">{formatPrice(stockData.open)}</div>
         </div>
         <div>
-          <div className="text-gray-400">High</div>
-          <div className="font-semibold">{formatPrice(stockData.high)}</div>
+          <div className="text-slate-500 text-xs">High</div>
+          <div className="font-semibold text-emerald-600 text-sm">{formatPrice(stockData.high)}</div>
         </div>
         <div>
-          <div className="text-gray-400">Low</div>
-          <div className="font-semibold">{formatPrice(stockData.low)}</div>
+          <div className="text-slate-500 text-xs">Low</div>
+          <div className="font-semibold text-rose-600 text-sm">{formatPrice(stockData.low)}</div>
         </div>
         <div>
-          <div className="text-gray-400">Volume</div>
-          <div className="font-semibold">{(stockData.volume / 1000000).toFixed(2)}M</div>
+          <div className="text-slate-500 text-xs">Volume</div>
+          <div className="font-semibold text-slate-700 text-sm">{(stockData.volume / 1000000).toFixed(2)}M</div>
         </div>
       </div>
     </div>

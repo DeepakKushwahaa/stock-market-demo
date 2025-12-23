@@ -2,6 +2,17 @@ import React, { createContext, useContext, useState, useCallback, useRef } from 
 import type { GridItemLayout, WidgetInstance, WidgetType, DashboardLayoutState, PresetName } from '../types/gridLayout.types';
 import { defaultLayoutState, GRID_CONFIG, DEFAULT_WIDGET_SIZES, LAYOUT_PRESETS } from '../utils/layoutDefaults';
 import { layoutService } from '../services/layoutService';
+import { calculateAutoAdjustForNewWidget, type WidgetMinSizes } from '../utils/gridHelpers';
+
+// Preview widget position type
+interface PreviewWidget {
+  type: WidgetType;
+  title: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 interface LayoutContextType {
   layouts: GridItemLayout[];
@@ -20,6 +31,9 @@ interface LayoutContextType {
   loadPreset: (presetName: PresetName) => void;
   // Max rows for viewport constraint
   setMaxRows: (rows: number) => void;
+  // Preview widget on hover
+  previewWidget: PreviewWidget | null;
+  setPreviewWidget: (type: WidgetType | null, title?: string) => void;
 }
 
 const LayoutContext = createContext<LayoutContextType | undefined>(undefined);
@@ -66,6 +80,7 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
   const [widgets, setWidgets] = useState<WidgetInstance[]>(initialState.widgets);
   const [isWidgetPanelOpen, setIsWidgetPanelOpen] = useState(true);
   const [maxRows, setMaxRowsState] = useState<number>(10);
+  const [previewWidget, setPreviewWidgetState] = useState<PreviewWidget | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setMaxRows = useCallback((rows: number) => {
@@ -96,93 +111,59 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     return widgets.length < GRID_CONFIG.maxWidgets;
   }, [widgets.length]);
 
-  // Check if there's enough space for a widget of given size
-  const hasSpaceForWidget = useCallback((widgetType: WidgetType): { hasSpace: boolean; position: { x: number; y: number } | null } => {
-    const size = DEFAULT_WIDGET_SIZES[widgetType];
-    const cols = GRID_CONFIG.cols;
-
-    // Use actual widget size (w, h) not minimum size
-    const widgetWidth = size.w;
-    const widgetHeight = size.h;
-
-    // If maxRows is not set yet or too small, no space available
-    if (maxRows < widgetHeight) {
-      return { hasSpace: false, position: null };
-    }
-
-    // Create a grid to track occupied cells
-    const grid: boolean[][] = [];
-    for (let row = 0; row < maxRows; row++) {
-      grid[row] = new Array(cols).fill(false);
-    }
-
-    // Mark occupied cells
-    for (const layout of layouts) {
-      for (let row = layout.y; row < layout.y + layout.h && row < maxRows; row++) {
-        for (let col = layout.x; col < layout.x + layout.w && col < cols; col++) {
-          if (grid[row]) {
-            grid[row][col] = true;
-          }
-        }
-      }
-    }
-
-    // Find first available position for the widget using actual size
-    for (let row = 0; row <= maxRows - widgetHeight; row++) {
-      for (let col = 0; col <= cols - widgetWidth; col++) {
-        let canFit = true;
-        // Check if the widget can fit at this position
-        for (let r = row; r < row + widgetHeight && canFit; r++) {
-          for (let c = col; c < col + widgetWidth && canFit; c++) {
-            if (r >= maxRows || c >= cols || (grid[r] && grid[r][c])) {
-              canFit = false;
-            }
-          }
-        }
-        if (canFit) {
-          return { hasSpace: true, position: { x: col, y: row } };
-        }
-      }
-    }
-
-    return { hasSpace: false, position: null };
-  }, [layouts, maxRows]);
-
   const addWidget = useCallback((type: WidgetType, title: string, props: Record<string, unknown>) => {
     if (!canAddWidget()) {
       alert(`Maximum ${GRID_CONFIG.maxWidgets} widgets allowed`);
       return;
     }
 
-    // Check if there's space for this widget
-    const spaceCheck = hasSpaceForWidget(type);
-    if (!spaceCheck.hasSpace || !spaceCheck.position) {
-      alert('Not enough space for this widget. Please remove or resize existing widgets.');
+    const size = DEFAULT_WIDGET_SIZES[type];
+
+    // Build widget min sizes map for auto-adjustment
+    const widgetMinSizes: WidgetMinSizes = {};
+    for (const widget of widgets) {
+      const widgetSize = DEFAULT_WIDGET_SIZES[widget.type];
+      widgetMinSizes[widget.i] = { minW: widgetSize.minW, minH: widgetSize.minH };
+    }
+
+    // Use auto-adjust to find space, shrinking existing widgets if needed
+    const autoAdjust = calculateAutoAdjustForNewWidget(
+      layouts,
+      size.w,
+      size.h,
+      GRID_CONFIG.cols,
+      maxRows,
+      widgetMinSizes,
+      GRID_CONFIG.maxWidgets
+    );
+
+    if (!autoAdjust.canAdd || !autoAdjust.newWidgetPosition) {
+      alert('Not enough space for this widget. Please remove existing widgets.');
       return;
     }
 
     const newId = `${type}-${Date.now()}`;
     const newWidget: WidgetInstance = { i: newId, type, title, props };
 
-    // Use the found position instead of auto-calculated one
-    const size = DEFAULT_WIDGET_SIZES[type];
+    // Create new layout at the found position
     const newLayout: GridItemLayout = {
       i: newId,
-      x: spaceCheck.position.x,
-      y: spaceCheck.position.y,
+      x: autoAdjust.newWidgetPosition.x,
+      y: autoAdjust.newWidgetPosition.y,
       w: size.w,
       h: size.h,
       minW: size.minW,
       minH: size.minH,
     };
 
+    // Use adjusted layouts (which may have shrunk existing widgets)
     const newWidgets = [...widgets, newWidget];
-    const newLayouts = [...layouts, newLayout];
+    const newLayouts = [...autoAdjust.adjustedLayouts, newLayout];
 
     setWidgets(newWidgets);
     setLayouts(newLayouts);
     saveState(newLayouts, newWidgets);
-  }, [layouts, widgets, canAddWidget, hasSpaceForWidget, saveState]);
+  }, [layouts, widgets, canAddWidget, maxRows, saveState]);
 
   const addWidgetAtPosition = useCallback((
     type: WidgetType,
@@ -243,6 +224,74 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     setIsWidgetPanelOpen(open);
   }, []);
 
+  // Set preview widget - calculates position automatically
+  const setPreviewWidget = useCallback((type: WidgetType | null, title?: string) => {
+    if (!type) {
+      setPreviewWidgetState(null);
+      return;
+    }
+
+    // Check if there's space for this widget
+    const size = DEFAULT_WIDGET_SIZES[type];
+    const cols = GRID_CONFIG.cols;
+    const widgetWidth = size.w;
+    const widgetHeight = size.h;
+
+    // Use a reasonable minimum maxRows if not set yet
+    const effectiveMaxRows = Math.max(maxRows, 10);
+
+    // If maxRows is too small for the widget, no space available
+    if (effectiveMaxRows < widgetHeight) {
+      setPreviewWidgetState(null);
+      return;
+    }
+
+    // Create a grid to track occupied cells
+    const grid: boolean[][] = [];
+    for (let row = 0; row < effectiveMaxRows; row++) {
+      grid[row] = new Array(cols).fill(false);
+    }
+
+    // Mark occupied cells
+    for (const layout of layouts) {
+      for (let row = layout.y; row < layout.y + layout.h && row < effectiveMaxRows; row++) {
+        for (let col = layout.x; col < layout.x + layout.w && col < cols; col++) {
+          if (row >= 0 && row < effectiveMaxRows && col >= 0 && col < cols) {
+            grid[row][col] = true;
+          }
+        }
+      }
+    }
+
+    // Find first available position for the widget
+    for (let row = 0; row <= effectiveMaxRows - widgetHeight; row++) {
+      for (let col = 0; col <= cols - widgetWidth; col++) {
+        let canFit = true;
+        for (let r = row; r < row + widgetHeight && canFit; r++) {
+          for (let c = col; c < col + widgetWidth && canFit; c++) {
+            if (grid[r] && grid[r][c]) {
+              canFit = false;
+            }
+          }
+        }
+        if (canFit) {
+          setPreviewWidgetState({
+            type,
+            title: title || type.toUpperCase(),
+            x: col,
+            y: row,
+            w: widgetWidth,
+            h: widgetHeight,
+          });
+          return;
+        }
+      }
+    }
+
+    // No space available
+    setPreviewWidgetState(null);
+  }, [layouts, maxRows]);
+
   const loadPreset = useCallback((presetName: PresetName) => {
     const preset = LAYOUT_PRESETS[presetName];
     if (!preset) return;
@@ -270,6 +319,8 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     setWidgetPanelOpen,
     loadPreset,
     setMaxRows,
+    previewWidget,
+    setPreviewWidget,
   };
 
   return <LayoutContext.Provider value={value}>{children}</LayoutContext.Provider>;

@@ -2,18 +2,18 @@ import type { DashboardLayoutState, GridConfig, WidgetSizeConfig, GridItemLayout
 
 // Grid configuration constants
 export const GRID_CONFIG: GridConfig = {
-  cols: 12,
-  rowHeight: 100,
+  cols: 25,
+  rowHeight: 25,
   margin: [8, 8],
   containerPadding: [8, 8],
-  maxWidgets: 15,
+  maxWidgets: 10,
 };
 
 // Default widget dimensions (in grid units)
 export const DEFAULT_WIDGET_SIZES: Record<WidgetType, WidgetSizeConfig> = {
-  chart: { w: 4, h: 4, minW: 3, minH: 3 },
-  screener: { w: 6, h: 4, minW: 4, minH: 3 },
-  watchlist: { w: 3, h: 4, minW: 2, minH: 3 },
+  chart: { w: 4, h: 8, minW: 3, minH: 6 },
+  screener: { w: 6, h: 8, minW: 4, minH: 6 },
+  watchlist: { w: 3, h: 8, minW: 2, minH: 6 },
 };
 
 // Default empty layout state
@@ -87,8 +87,8 @@ export const LAYOUT_PRESETS: Record<PresetName, LayoutPreset> = {
     description: 'Optimized for active trading with chart and watchlist',
     icon: '📊',
     layouts: [
-      { i: 'chart-trading-1', x: 0, y: 0, w: 8, h: 4, minW: 3, minH: 3 },
-      { i: 'watchlist-trading-1', x: 8, y: 0, w: 4, h: 4, minW: 2, minH: 3 },
+      { i: 'chart-trading-1', x: 0, y: 0, w: 8, h: 8, minW: 3, minH: 6 },
+      { i: 'watchlist-trading-1', x: 8, y: 0, w: 4, h: 8, minW: 2, minH: 6 },
     ],
     widgets: [
       { i: 'chart-trading-1', type: 'chart', title: 'AAPL Chart', props: { symbol: 'AAPL' } },
@@ -100,9 +100,9 @@ export const LAYOUT_PRESETS: Record<PresetName, LayoutPreset> = {
     description: 'Multiple charts with screener for market analysis',
     icon: '📈',
     layouts: [
-      { i: 'chart-analysis-1', x: 0, y: 0, w: 6, h: 4, minW: 3, minH: 3 },
-      { i: 'chart-analysis-2', x: 6, y: 0, w: 6, h: 4, minW: 3, minH: 3 },
-      { i: 'screener-analysis-1', x: 0, y: 4, w: 12, h: 3, minW: 4, minH: 3 },
+      { i: 'chart-analysis-1', x: 0, y: 0, w: 6, h: 8, minW: 3, minH: 6 },
+      { i: 'chart-analysis-2', x: 6, y: 0, w: 6, h: 8, minW: 3, minH: 6 },
+      { i: 'screener-analysis-1', x: 0, y: 8, w: 12, h: 6, minW: 4, minH: 6 },
     ],
     widgets: [
       { i: 'chart-analysis-1', type: 'chart', title: 'AAPL Chart', props: { symbol: 'AAPL' } },
@@ -115,8 +115,8 @@ export const LAYOUT_PRESETS: Record<PresetName, LayoutPreset> = {
     description: 'Minimal layout for quick overview',
     icon: '📱',
     layouts: [
-      { i: 'chart-compact-1', x: 0, y: 0, w: 6, h: 3, minW: 3, minH: 3 },
-      { i: 'watchlist-compact-1', x: 6, y: 0, w: 6, h: 3, minW: 2, minH: 3 },
+      { i: 'chart-compact-1', x: 0, y: 0, w: 6, h: 6, minW: 3, minH: 6 },
+      { i: 'watchlist-compact-1', x: 6, y: 0, w: 6, h: 6, minW: 2, minH: 6 },
     ],
     widgets: [
       { i: 'chart-compact-1', type: 'chart', title: 'AAPL Chart', props: { symbol: 'AAPL' } },
