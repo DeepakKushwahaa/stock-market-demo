@@ -4,15 +4,21 @@ interface WidgetWrapperProps {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  isHighlighted?: boolean;
 }
 
 export const WidgetWrapper: React.FC<WidgetWrapperProps> = ({
   title,
   onClose,
-  children
+  children,
+  isHighlighted = false
 }) => {
   return (
-    <div className="h-full flex flex-col bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm hover:shadow-md transition-shadow duration-200">
+    <div className={`h-full flex flex-col bg-white rounded-xl overflow-hidden border shadow-sm hover:shadow-md transition-all duration-200 ${
+      isHighlighted
+        ? 'border-emerald-400 ring-2 ring-emerald-400/50 shadow-lg shadow-emerald-500/20'
+        : 'border-slate-200'
+    }`}>
       {/* Header - acts as drag handle */}
       <div className="widget-drag-handle flex items-center justify-between px-3! py-1.5! bg-slate-50 cursor-move select-none border-b border-slate-100">
         {/* Drag indicator */}

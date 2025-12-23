@@ -1,12 +1,11 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useLayout } from '../../contexts/LayoutContext';
 import { WidgetDefinitions } from '../widgets';
-import { GRID_CONFIG, LAYOUT_PRESETS } from '../../utils/layoutDefaults';
+import { LAYOUT_PRESETS } from '../../utils/layoutDefaults';
 import type { WidgetType, WidgetDragData, PresetName } from '../../types/gridLayout.types';
 
 export const WidgetPanel: React.FC = () => {
-  const { resetLayout, addWidget, canAddWidget, setWidgetPanelOpen, loadPreset, setPreviewWidget, previewWidget } = useLayout();
-  const [hoveredWidgetId, setHoveredWidgetId] = useState<string | null>(null);
+  const { resetLayout, addWidget, setWidgetPanelOpen, loadPreset, setPreviewWidget } = useLayout();
 
   const handleDragStart = (e: React.DragEvent, widgetId: string, symbol?: string, widgetName?: string) => {
     // Keep preview visible during drag (don't clear it)
@@ -36,11 +35,6 @@ export const WidgetPanel: React.FC = () => {
   };
 
   const handleAddWidget = (widgetId: string, symbol?: string, widgetName?: string) => {
-    if (!canAddWidget()) {
-      alert(`Maximum ${GRID_CONFIG.maxWidgets} widgets allowed`);
-      return;
-    }
-
     // Determine component type based on widget ID
     let type: WidgetType = 'chart';
     if (widgetId.startsWith('chart-')) {
@@ -83,12 +77,10 @@ export const WidgetPanel: React.FC = () => {
 
   const handleWidgetHover = (widgetId: string, widgetName: string) => {
     const type = getWidgetType(widgetId);
-    setHoveredWidgetId(widgetId);
     setPreviewWidget(type, widgetName);
   };
 
   const handleWidgetLeave = () => {
-    setHoveredWidgetId(null);
     setPreviewWidget(null);
   };
 
@@ -142,25 +134,16 @@ export const WidgetPanel: React.FC = () => {
           <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3!">Widgets</h3>
           <div className="space-y-3!">
             {WidgetDefinitions.map((widget) => {
-              // Check if this widget is hovered and has no space available
-              const isHovered = hoveredWidgetId === widget.id;
-              const hasNoSpace = isHovered && previewWidget === null;
-
               return (
               <div
                 key={widget.id}
-                draggable={!hasNoSpace}
+                draggable
                 onClick={() => handleAddWidget(widget.id, widget.symbol, widget.name)}
                 onDragStart={(e) => handleDragStart(e, widget.id, widget.symbol, widget.name)}
                 onDragEnd={handleDragEnd}
                 onMouseEnter={() => handleWidgetHover(widget.id, widget.name)}
                 onMouseLeave={handleWidgetLeave}
-                className={`bg-white border border-slate-200 rounded-xl transition-all duration-200 overflow-hidden group relative ${
-                  hasNoSpace
-                    ? 'cursor-not-allowed opacity-50'
-                    : 'cursor-pointer hover:border-emerald-400 hover:shadow-md'
-                }`}
-                title={hasNoSpace ? "This widget doesn't fit. Resize or remove another widget." : ''}
+                className="bg-white border border-slate-200 rounded-xl transition-all duration-200 overflow-hidden group relative cursor-pointer hover:border-emerald-400 hover:shadow-md"
               >
                 {/* Preview Image */}
                 <div
@@ -177,9 +160,7 @@ export const WidgetPanel: React.FC = () => {
                 </div>
 
                 {/* Hover indicator */}
-                {!hasNoSpace && (
-                  <div className="absolute inset-0 bg-emerald-500/0 group-hover:bg-emerald-500/5 transition-colors pointer-events-none" />
-                )}
+                <div className="absolute inset-0 bg-emerald-500/0 group-hover:bg-emerald-500/5 transition-colors pointer-events-none" />
               </div>
               );
             })}

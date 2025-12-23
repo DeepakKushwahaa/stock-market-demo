@@ -863,12 +863,10 @@ export function calculateAutoAdjustForNewWidget(
   cols: number,
   maxRows: number,
   widgetMinSizes: WidgetMinSizes,
-  maxWidgets: number = 10
+  _maxWidgets: number = 10
 ): AutoAdjustResult {
-  // Check if we've hit max widgets
-  if (layouts.length >= maxWidgets) {
-    return { canAdd: false, adjustedLayouts: layouts, newWidgetPosition: null, shrunkWidgets: [] };
-  }
+  // Note: maxWidgets check removed - now only checks if there's physical space
+  // The space availability check (including shrinking to min sizes) determines if widget can be added
 
   // Phase 1: Check if there's already space without any adjustment
   const occupancy = createOccupancyGrid(layouts, cols, maxRows);

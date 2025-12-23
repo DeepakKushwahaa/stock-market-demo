@@ -26,7 +26,7 @@ export const DashboardLayout: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
-  const { layouts, widgets, updateLayouts, removeWidget, addWidget, setMaxRows, previewWidget } = useLayout();
+  const { layouts, widgets, updateLayouts, removeWidget, addWidget, setMaxRows, previewWidget, newlyAddedWidgetId } = useLayout();
 
   // Store the last valid layout to revert to if resize pushes widgets outside viewport
   const lastValidLayoutRef = useRef<GridItemLayout[]>(layouts);
@@ -139,8 +139,8 @@ export const DashboardLayout: React.FC = () => {
     return adjustedLayout;
   }, [maxRows]);
 
-  // Calculate maxH and maxW for each widget based on its position and other widgets
-  // Considers that widgets can be pushed until they hit viewport edge
+  // Calculate maxH and maxW for each widget based on available space in ALL directions
+  // This allows resizing from left, right, top, and bottom handles
   const calculateMaxDimensions = useCallback((currentLayouts: GridItemLayout[]): Map<string, { maxH: number; maxW: number }> => {
     const maxDimensions = new Map<string, { maxH: number; maxW: number }>();
     const cols = GRID_CONFIG.cols;
@@ -149,51 +149,87 @@ export const DashboardLayout: React.FC = () => {
       const itemRight = item.x + item.w;
       const itemBottom = item.y + item.h;
 
-      // For maxH: Calculate total available space below
-      // including space that can be gained by pushing other widgets down
-      const widgetsBelow = currentLayouts
+      // Calculate space available to the LEFT (for left-side resize)
+      const widgetsToLeft = currentLayouts
         .filter(other => {
           if (other.i === item.i) return false;
-          // Widget is below
-          if (other.y < item.y + item.h) return false;
-          // Check horizontal overlap
-          const otherRight = other.x + other.w;
-          const hasHorizontalOverlap = !(other.x >= itemRight || otherRight <= item.x);
-          return hasHorizontalOverlap;
-        })
-        .sort((a, b) => a.y - b.y); // Sort by y position
-
-      // Calculate total height of widgets below
-      let totalHeightBelow = 0;
-      for (const widget of widgetsBelow) {
-        totalHeightBelow += widget.h;
-      }
-
-      // maxH = viewport height - item's y position - total height of widgets that must stay below
-      const maxH = maxRows - item.y - totalHeightBelow;
-
-      // For maxW: Calculate total available space to the right
-      // including space that can be gained by pushing other widgets right
-      const widgetsToRight = currentLayouts
-        .filter(other => {
-          if (other.i === item.i) return false;
-          // Widget is to the right
-          if (other.x < item.x + item.w) return false;
+          // Widget is to the left (its right edge is <= our left edge)
+          if (other.x + other.w > item.x) return false;
           // Check vertical overlap
           const otherBottom = other.y + other.h;
           const hasVerticalOverlap = !(other.y >= itemBottom || otherBottom <= item.y);
           return hasVerticalOverlap;
-        })
-        .sort((a, b) => a.x - b.x); // Sort by x position
+        });
 
-      // Calculate total width of widgets to the right
-      let totalWidthToRight = 0;
-      for (const widget of widgetsToRight) {
-        totalWidthToRight += widget.w;
+      // Find the rightmost edge of widgets to the left
+      let leftBoundary = 0;
+      for (const widget of widgetsToLeft) {
+        leftBoundary = Math.max(leftBoundary, widget.x + widget.w);
       }
+      const spaceOnLeft = item.x - leftBoundary;
 
-      // maxW = viewport width - item's x position - total width of widgets that must stay to the right
-      const maxW = cols - item.x - totalWidthToRight;
+      // Calculate space available to the RIGHT (for right-side resize)
+      const widgetsToRight = currentLayouts
+        .filter(other => {
+          if (other.i === item.i) return false;
+          // Widget is to the right (its left edge is >= our right edge)
+          if (other.x < itemRight) return false;
+          // Check vertical overlap
+          const otherBottom = other.y + other.h;
+          const hasVerticalOverlap = !(other.y >= itemBottom || otherBottom <= item.y);
+          return hasVerticalOverlap;
+        });
+
+      // Find the leftmost edge of widgets to the right
+      let rightBoundary = cols;
+      for (const widget of widgetsToRight) {
+        rightBoundary = Math.min(rightBoundary, widget.x);
+      }
+      const spaceOnRight = rightBoundary - itemRight;
+
+      // Calculate space available ABOVE (for top-side resize)
+      const widgetsAbove = currentLayouts
+        .filter(other => {
+          if (other.i === item.i) return false;
+          // Widget is above (its bottom edge is <= our top edge)
+          if (other.y + other.h > item.y) return false;
+          // Check horizontal overlap
+          const otherRight = other.x + other.w;
+          const hasHorizontalOverlap = !(other.x >= itemRight || otherRight <= item.x);
+          return hasHorizontalOverlap;
+        });
+
+      // Find the bottommost edge of widgets above
+      let topBoundary = 0;
+      for (const widget of widgetsAbove) {
+        topBoundary = Math.max(topBoundary, widget.y + widget.h);
+      }
+      const spaceAbove = item.y - topBoundary;
+
+      // Calculate space available BELOW (for bottom-side resize)
+      const widgetsBelow = currentLayouts
+        .filter(other => {
+          if (other.i === item.i) return false;
+          // Widget is below (its top edge is >= our bottom edge)
+          if (other.y < itemBottom) return false;
+          // Check horizontal overlap
+          const otherRight = other.x + other.w;
+          const hasHorizontalOverlap = !(other.x >= itemRight || otherRight <= item.x);
+          return hasHorizontalOverlap;
+        });
+
+      // Find the topmost edge of widgets below
+      let bottomBoundary = maxRows;
+      for (const widget of widgetsBelow) {
+        bottomBoundary = Math.min(bottomBoundary, widget.y);
+      }
+      const spaceBelow = bottomBoundary - itemBottom;
+
+      // maxW = current width + space on left + space on right
+      const maxW = item.w + spaceOnLeft + spaceOnRight;
+
+      // maxH = current height + space above + space below
+      const maxH = item.h + spaceAbove + spaceBelow;
 
       maxDimensions.set(item.i, {
         maxH: Math.max(item.h, maxH),
@@ -847,11 +883,14 @@ export const DashboardLayout: React.FC = () => {
                 return null;
               }
 
+              const isNewlyAdded = widget.i === newlyAddedWidgetId;
+
               return (
                 <div key={widget.i}>
                   <WidgetWrapper
                     title={widget.title}
                     onClose={() => removeWidget(widget.i)}
+                    isHighlighted={isNewlyAdded}
                   >
                     <WidgetComponent {...widget.props} />
                   </WidgetWrapper>

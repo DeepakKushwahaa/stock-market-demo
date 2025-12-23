@@ -34,6 +34,8 @@ interface LayoutContextType {
   // Preview widget on hover
   previewWidget: PreviewWidget | null;
   setPreviewWidget: (type: WidgetType | null, title?: string) => void;
+  // Newly added widget highlight
+  newlyAddedWidgetId: string | null;
 }
 
 const LayoutContext = createContext<LayoutContextType | undefined>(undefined);
@@ -81,7 +83,9 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
   const [isWidgetPanelOpen, setIsWidgetPanelOpen] = useState(true);
   const [maxRows, setMaxRowsState] = useState<number>(10);
   const [previewWidget, setPreviewWidgetState] = useState<PreviewWidget | null>(null);
+  const [newlyAddedWidgetId, setNewlyAddedWidgetId] = useState<string | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setMaxRows = useCallback((rows: number) => {
     setMaxRowsState(rows);
@@ -112,11 +116,6 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
   }, [widgets.length]);
 
   const addWidget = useCallback((type: WidgetType, title: string, props: Record<string, unknown>) => {
-    if (!canAddWidget()) {
-      alert(`Maximum ${GRID_CONFIG.maxWidgets} widgets allowed`);
-      return;
-    }
-
     const size = DEFAULT_WIDGET_SIZES[type];
 
     // Build widget min sizes map for auto-adjustment
@@ -163,7 +162,16 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     setWidgets(newWidgets);
     setLayouts(newLayouts);
     saveState(newLayouts, newWidgets);
-  }, [layouts, widgets, canAddWidget, maxRows, saveState]);
+
+    // Highlight newly added widget for 2 seconds
+    if (highlightTimeoutRef.current) {
+      clearTimeout(highlightTimeoutRef.current);
+    }
+    setNewlyAddedWidgetId(newId);
+    highlightTimeoutRef.current = setTimeout(() => {
+      setNewlyAddedWidgetId(null);
+    }, 2000);
+  }, [layouts, widgets, maxRows, saveState]);
 
   const addWidgetAtPosition = useCallback((
     type: WidgetType,
@@ -172,11 +180,6 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     x: number,
     y: number
   ) => {
-    if (!canAddWidget()) {
-      alert(`Maximum ${GRID_CONFIG.maxWidgets} widgets allowed`);
-      return;
-    }
-
     const newId = `${type}-${Date.now()}`;
     const newWidget: WidgetInstance = { i: newId, type, title, props };
 
@@ -199,7 +202,7 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     setWidgets(newWidgets);
     setLayouts(newLayouts);
     saveState(newLayouts, newWidgets);
-  }, [layouts, widgets, canAddWidget, saveState]);
+  }, [layouts, widgets, saveState]);
 
   const removeWidget = useCallback((widgetId: string) => {
     const newWidgets = widgets.filter(w => w.i !== widgetId);
@@ -321,6 +324,7 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     setMaxRows,
     previewWidget,
     setPreviewWidget,
+    newlyAddedWidgetId,
   };
 
   return <LayoutContext.Provider value={value}>{children}</LayoutContext.Provider>;

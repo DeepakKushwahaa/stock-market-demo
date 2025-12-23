@@ -4,16 +4,16 @@ import type { DashboardLayoutState, GridConfig, WidgetSizeConfig, GridItemLayout
 export const GRID_CONFIG: GridConfig = {
   cols: 25,
   rowHeight: 25,
-  margin: [8, 8],
+  margin: [7, 7],
   containerPadding: [8, 8],
   maxWidgets: 10,
 };
 
 // Default widget dimensions (in grid units)
 export const DEFAULT_WIDGET_SIZES: Record<WidgetType, WidgetSizeConfig> = {
-  chart: { w: 4, h: 8, minW: 3, minH: 6 },
-  screener: { w: 6, h: 8, minW: 4, minH: 6 },
-  watchlist: { w: 3, h: 8, minW: 2, minH: 6 },
+  chart: { w: 8, h: 14, minW: 5, minH: 6 },
+  screener: { w: 10, h: 14, minW: 5, minH: 6 },
+  watchlist: { w: 6, h: 14, minW: 5, minH: 6 },
 };
 
 // Default empty layout state
