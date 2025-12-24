@@ -12,9 +12,12 @@ import {
   getWidgetAtPosition,
   calculatePush,
   calculateResizeSpace,
-  calculateSwap,
+  calculateSwapPreview,
+  calculateMultiSwapPreview,
+  forceLayoutsInViewport,
   pixelToGridCoords,
   type SwapPreview,
+  type MultiSwapPreview,
   type GridZone,
   type WidgetMinSizes,
 } from '../../utils/gridHelpers';
@@ -44,10 +47,14 @@ export const DashboardLayout: React.FC = () => {
   // Track if dragging from external source (widget panel)
   const [isExternalDrag, setIsExternalDrag] = useState(false);
 
-  // Feature 4: Swap detection state
+  // Feature 4: Swap detection state (single widget swap)
   const [swapPreview, setSwapPreview] = useState<SwapPreview | null>(null);
   const swapPreviewRef = useRef<SwapPreview | null>(null);
   const dragStartLayoutRef = useRef<GridItemLayout | null>(null);
+
+  // Feature 4b: Multi-widget swap state (large widget swapping with multiple small widgets)
+  const [multiSwapPreview, setMultiSwapPreview] = useState<MultiSwapPreview | null>(null);
+  const multiSwapPreviewRef = useRef<MultiSwapPreview | null>(null);
 
   // Feature 5: Push preview state (used internally in handleDrop)
   const [, setPushPreview] = useState<GridItemLayout[] | null>(null);
@@ -106,37 +113,12 @@ export const DashboardLayout: React.FC = () => {
     };
   }, []);
 
-  // Try to adjust layout to keep widgets within viewport by shifting horizontally
-  const adjustLayoutForViewport = useCallback((newLayout: GridItemLayout[]): GridItemLayout[] | null => {
+  // Try to adjust layout to keep widgets within viewport - always returns valid layout
+  const adjustLayoutForViewport = useCallback((newLayout: GridItemLayout[]): GridItemLayout[] => {
     const cols = GRID_CONFIG.cols;
-    const adjustedLayout = newLayout.map(item => ({ ...item }));
 
-    // Check if any widget is outside viewport vertically
-    for (const item of adjustedLayout) {
-      if (item.y + item.h > maxRows) {
-        // Widget is outside viewport - try to find space in same row or above
-        // This means the layout change pushed something out - reject it
-        return null;
-      }
-    }
-
-    // Check horizontal bounds and adjust
-    for (const item of adjustedLayout) {
-      if (item.x + item.w > cols) {
-        // Try to shift left
-        const newX = cols - item.w;
-        if (newX >= 0) {
-          item.x = newX;
-        } else {
-          return null; // Can't fit
-        }
-      }
-      if (item.x < 0) {
-        item.x = 0;
-      }
-    }
-
-    return adjustedLayout;
+    // Force all widgets to stay within viewport bounds
+    return forceLayoutsInViewport(newLayout, cols, maxRows);
   }, [maxRows]);
 
   // Calculate maxH and maxW for each widget based on available space in ALL directions
@@ -240,23 +222,39 @@ export const DashboardLayout: React.FC = () => {
     return maxDimensions;
   }, [maxRows]);
 
-  const handleLayoutChange = useCallback((newLayout: GridItemLayout[]) => {
-    // Try to adjust layout to fit within viewport
-    const adjustedLayout = adjustLayoutForViewport(newLayout);
+  // Track if we just applied a swap - prevents handleLayoutChange from overriding our positions
+  const justAppliedSwapRef = useRef(false);
 
-    if (!adjustedLayout) {
-      // Can't fit - revert to last valid layout
-      updateLayouts(lastValidLayoutRef.current);
+  const handleLayoutChange = useCallback((newLayout: GridItemLayout[]) => {
+    const cols = GRID_CONFIG.cols;
+
+    // If we just applied a swap, skip this callback as react-grid-layout may provide stale positions
+    if (justAppliedSwapRef.current) {
+      justAppliedSwapRef.current = false;
       return;
     }
 
+    // Force adjust layout to fit within viewport - always returns valid layout
+    const adjustedLayout = adjustLayoutForViewport(newLayout);
+
+    // CRITICAL: Double-check that no widget is outside viewport
+    const hasOutOfBoundsWidget = adjustedLayout.some(item =>
+      item.x < 0 || item.y < 0 ||
+      item.x + item.w > cols || item.y + item.h > maxRows
+    );
+
+    // If any widget is still out of bounds after adjustment, force it back
+    const finalLayout = hasOutOfBoundsWidget
+      ? forceLayoutsInViewport(adjustedLayout, cols, maxRows)
+      : adjustedLayout;
+
     // Calculate maxH and maxW for each widget to prevent resizing beyond viewport/other widgets
-    const maxDimensions = calculateMaxDimensions(adjustedLayout);
+    const maxDimensions = calculateMaxDimensions(finalLayout);
 
     // Update layouts while preserving minW/minH and adding maxH/maxW
-    const updatedLayouts: GridItemLayout[] = adjustedLayout.map((item: GridItemLayout) => {
+    const updatedLayouts: GridItemLayout[] = finalLayout.map((item: GridItemLayout) => {
       const existingLayout = layouts.find(l => l.i === item.i);
-      const dimensions = maxDimensions.get(item.i) ?? { maxH: maxRows - item.y, maxW: GRID_CONFIG.cols - item.x };
+      const dimensions = maxDimensions.get(item.i) ?? { maxH: maxRows - item.y, maxW: cols - item.x };
       return {
         ...item,
         minW: existingLayout?.minW ?? item.minW,
@@ -609,31 +607,77 @@ export const DashboardLayout: React.FC = () => {
       if (!gridPos || !draggingWidgetRef.current || !dragStartLayoutRef.current) return;
 
       const { id: dragId } = draggingWidgetRef.current;
-      const sourceLayout = dragStartLayoutRef.current;
+      const cols = GRID_CONFIG.cols;
+      const sourceLayout = layouts.find(l => l.i === dragId);
 
-      // Check if mouse is over another widget (not the source widget's original position)
+      // Check if mouse is over another widget
       const targetWidget = getWidgetAtPosition(layouts, gridPos.x, gridPos.y, dragId);
 
-      // Show swap preview when hovering over another widget
-      // This allows swapping even when empty space exists (user can choose to swap instead)
-      if (targetWidget) {
-        const newSwapPreview: SwapPreview = {
-          sourceId: dragId,
-          targetId: targetWidget.i,
-          sourceNewPos: { x: targetWidget.x, y: targetWidget.y, w: targetWidget.w, h: targetWidget.h },
-          targetNewPos: { x: sourceLayout.x, y: sourceLayout.y, w: sourceLayout.w, h: sourceLayout.h },
-        };
-        swapPreviewRef.current = newSwapPreview;
-        setSwapPreview(newSwapPreview);
+      if (targetWidget && sourceLayout) {
+        // Try multi-swap first - works for any size combination (large->small or small->large)
+        const multiPreview = calculateMultiSwapPreview(layouts, dragId, gridPos.x, gridPos.y, cols, maxRows);
+
+        if (multiPreview && multiPreview.targetIds.length > 0) {
+          // Use multi-swap for any overlap (works for both large->small and small->large)
+          multiSwapPreviewRef.current = multiPreview;
+          setMultiSwapPreview(multiPreview);
+          swapPreviewRef.current = null;
+          setSwapPreview(null);
+        } else {
+          // Multi-swap failed - check how many widgets would be overlapped
+          // If multiple widgets are overlapped but multi-swap failed, don't allow single swap
+          // as it would leave some widgets without valid positions
+          const overlappedCount = layouts.filter(l => {
+            if (l.i === dragId) return false;
+            // Check if this layout overlaps with where source would land
+            const sourceX = Math.max(0, Math.min(gridPos.x, cols - sourceLayout.w));
+            const sourceY = Math.max(0, Math.min(gridPos.y, maxRows - sourceLayout.h));
+            return !(l.x >= sourceX + sourceLayout.w || l.x + l.w <= sourceX ||
+                     l.y >= sourceY + sourceLayout.h || l.y + l.h <= sourceY);
+          }).length;
+
+          if (overlappedCount <= 1) {
+            // Only one widget overlapped - safe to try single swap
+            const previewResult = calculateSwapPreview(layouts, dragId, targetWidget.i, cols, maxRows);
+            if (previewResult) {
+              const newSwapPreview: SwapPreview = {
+                sourceId: dragId,
+                targetId: targetWidget.i,
+                sourceNewPos: previewResult.sourceNewPos,
+                targetNewPos: previewResult.targetNewPos,
+              };
+              swapPreviewRef.current = newSwapPreview;
+              setSwapPreview(newSwapPreview);
+              multiSwapPreviewRef.current = null;
+              setMultiSwapPreview(null);
+            } else {
+              // No valid swap possible
+              swapPreviewRef.current = null;
+              setSwapPreview(null);
+              multiSwapPreviewRef.current = null;
+              setMultiSwapPreview(null);
+            }
+          } else {
+            // Multiple widgets overlapped but multi-swap failed - no valid swap possible
+            // Don't show any preview to prevent partial swaps
+            swapPreviewRef.current = null;
+            setSwapPreview(null);
+            multiSwapPreviewRef.current = null;
+            setMultiSwapPreview(null);
+          }
+        }
       } else {
+        // No overlap - clear all previews
         swapPreviewRef.current = null;
         setSwapPreview(null);
+        multiSwapPreviewRef.current = null;
+        setMultiSwapPreview(null);
       }
     };
 
     document.addEventListener('mousemove', handleMouseMove);
     return () => document.removeEventListener('mousemove', handleMouseMove);
-  }, [isDraggingWidget, layouts, getGridPositionFromMouse]);
+  }, [isDraggingWidget, layouts, getGridPositionFromMouse, maxRows]);
 
   // Handle drag start
   const handleDragStart = useCallback((_layout: GridItemLayout[], oldItem: GridItemLayout, _newItem: GridItemLayout, _placeholder: GridItemLayout, _e: MouseEvent, _element: HTMLElement) => {
@@ -658,68 +702,151 @@ export const DashboardLayout: React.FC = () => {
     setIsDraggingWidget(false);
     const cols = GRID_CONFIG.cols;
 
-    // Feature 4: Check if this is a swap operation (use ref to get latest value)
-    const currentSwapPreview = swapPreviewRef.current;
-    if (currentSwapPreview && dragStartLayoutRef.current) {
-      // Pass cols and maxRows to enable size preservation when space allows
-      const swappedLayouts = calculateSwap(layouts, currentSwapPreview.sourceId, currentSwapPreview.targetId, cols, maxRows);
-      if (swappedLayouts) {
-        // Apply swapped layouts with min/max dimensions
-        const maxDimensions = calculateMaxDimensions(swappedLayouts);
-        const validLayout = swappedLayouts.map(item => {
-          const widget = widgets.find(w => w.i === item.i);
-          const sizes = widget ? DEFAULT_WIDGET_SIZES[widget.type] : DEFAULT_WIDGET_SIZES.chart;
-          const dimensions = maxDimensions.get(item.i) ?? { maxH: maxRows - item.y, maxW: cols - item.x };
-          return {
-            ...item,
-            minW: sizes.minW,
-            minH: sizes.minH,
-            maxH: dimensions.maxH,
-            maxW: dimensions.maxW,
-          };
-        });
-        lastValidLayoutRef.current = validLayout;
-        updateLayouts(validLayout);
-        swapPreviewRef.current = null;
-        setSwapPreview(null);
-        dragStartLayoutRef.current = null;
-        draggingWidgetRef.current = null;
-        return;
-      }
-    }
-
-    // Clear swap state
-    swapPreviewRef.current = null;
-    setSwapPreview(null);
-    dragStartLayoutRef.current = null;
-    draggingWidgetRef.current = null;
-
-    // Check if any widget is outside viewport (vertical or horizontal)
-    const isInvalid = newLayout.some(item =>
-      item.y + item.h > maxRows || item.x + item.w > cols
-    );
-
-    if (isInvalid) {
-      // Revert to last valid layout
-      updateLayouts(lastValidLayoutRef.current);
-    } else {
-      // Calculate maxH and maxW for the new layout
-      const maxDimensions = calculateMaxDimensions(newLayout);
-
-      // Update the last valid layout ref
-      const validLayout = newLayout.map(item => {
+    // Helper to apply final layout with viewport enforcement
+    const applyFinalLayout = (layoutToApply: GridItemLayout[]) => {
+      // ALWAYS force layouts to stay within viewport as final safety check
+      const forcedLayout = forceLayoutsInViewport(layoutToApply, cols, maxRows);
+      const maxDimensions = calculateMaxDimensions(forcedLayout);
+      const validLayout = forcedLayout.map(item => {
+        const widget = widgets.find(w => w.i === item.i);
+        const sizes = widget ? DEFAULT_WIDGET_SIZES[widget.type] : DEFAULT_WIDGET_SIZES.chart;
         const existingLayout = layouts.find(l => l.i === item.i);
         const dimensions = maxDimensions.get(item.i) ?? { maxH: maxRows - item.y, maxW: cols - item.x };
         return {
           ...item,
-          minW: existingLayout?.minW ?? item.minW,
-          minH: existingLayout?.minH ?? item.minH,
+          minW: sizes?.minW ?? existingLayout?.minW ?? item.minW,
+          minH: sizes?.minH ?? existingLayout?.minH ?? item.minH,
           maxH: dimensions.maxH,
           maxW: dimensions.maxW,
         };
       });
       lastValidLayoutRef.current = validLayout;
       updateLayouts(validLayout);
+    };
+
+    // Feature 4b: Check if this is a multi-swap operation (large widget with multiple small widgets)
+    // Use EXACT preview positions - don't recalculate
+    const currentMultiSwapPreview = multiSwapPreviewRef.current;
+    if (currentMultiSwapPreview && dragStartLayoutRef.current) {
+      // Validate that all preview positions are within viewport
+      const sourceInBounds = currentMultiSwapPreview.sourceNewPos.x >= 0 &&
+        currentMultiSwapPreview.sourceNewPos.y >= 0 &&
+        currentMultiSwapPreview.sourceNewPos.x + currentMultiSwapPreview.sourceNewPos.w <= cols &&
+        currentMultiSwapPreview.sourceNewPos.y + currentMultiSwapPreview.sourceNewPos.h <= maxRows;
+
+      const targetsInBounds = currentMultiSwapPreview.targetNewPositions.every(t =>
+        t.pos.x >= 0 && t.pos.y >= 0 &&
+        t.pos.x + t.pos.w <= cols && t.pos.y + t.pos.h <= maxRows
+      );
+
+      if (sourceInBounds && targetsInBounds) {
+        // Apply EXACT preview positions directly - FORCED to be within viewport
+        const swappedLayouts = layouts.map(l => {
+          if (l.i === currentMultiSwapPreview.sourceId) {
+            // Force clamp source position
+            const x = Math.max(0, Math.min(currentMultiSwapPreview.sourceNewPos.x, cols - l.w));
+            const y = Math.max(0, Math.min(currentMultiSwapPreview.sourceNewPos.y, maxRows - l.h));
+            return { ...l, x, y };
+          }
+          const targetPos = currentMultiSwapPreview.targetNewPositions.find(t => t.id === l.i);
+          if (targetPos) {
+            // Force clamp target position
+            const x = Math.max(0, Math.min(targetPos.pos.x, cols - l.w));
+            const y = Math.max(0, Math.min(targetPos.pos.y, maxRows - l.h));
+            return { ...l, x, y };
+          }
+          return l;
+        });
+        // Mark that we're applying a swap - prevents handleLayoutChange from overriding
+        justAppliedSwapRef.current = true;
+        applyFinalLayout(swappedLayouts);
+        // Clear all swap states
+        multiSwapPreviewRef.current = null;
+        setMultiSwapPreview(null);
+        swapPreviewRef.current = null;
+        setSwapPreview(null);
+        dragStartLayoutRef.current = null;
+        draggingWidgetRef.current = null;
+        return;
+      }
+      // Swap not valid - fall through to apply newLayout with viewport enforcement
+    }
+
+    // Feature 4: Check if this is a single swap operation
+    // Use EXACT preview positions - don't recalculate
+    const currentSwapPreview = swapPreviewRef.current;
+    if (currentSwapPreview && dragStartLayoutRef.current) {
+      // Validate that both preview positions are within viewport
+      const sourceInBounds = currentSwapPreview.sourceNewPos.x >= 0 &&
+        currentSwapPreview.sourceNewPos.y >= 0 &&
+        currentSwapPreview.sourceNewPos.x + currentSwapPreview.sourceNewPos.w <= cols &&
+        currentSwapPreview.sourceNewPos.y + currentSwapPreview.sourceNewPos.h <= maxRows;
+
+      const targetInBounds = currentSwapPreview.targetNewPos.x >= 0 &&
+        currentSwapPreview.targetNewPos.y >= 0 &&
+        currentSwapPreview.targetNewPos.x + currentSwapPreview.targetNewPos.w <= cols &&
+        currentSwapPreview.targetNewPos.y + currentSwapPreview.targetNewPos.h <= maxRows;
+
+      if (sourceInBounds && targetInBounds) {
+        // Apply EXACT preview positions directly - FORCED to be within viewport
+        const swappedLayouts = layouts.map(l => {
+          if (l.i === currentSwapPreview.sourceId) {
+            // Force clamp source position
+            const x = Math.max(0, Math.min(currentSwapPreview.sourceNewPos.x, cols - l.w));
+            const y = Math.max(0, Math.min(currentSwapPreview.sourceNewPos.y, maxRows - l.h));
+            return { ...l, x, y };
+          }
+          if (l.i === currentSwapPreview.targetId) {
+            // Force clamp target position
+            const x = Math.max(0, Math.min(currentSwapPreview.targetNewPos.x, cols - l.w));
+            const y = Math.max(0, Math.min(currentSwapPreview.targetNewPos.y, maxRows - l.h));
+            return { ...l, x, y };
+          }
+          return l;
+        });
+        // Mark that we're applying a swap - prevents handleLayoutChange from overriding
+        justAppliedSwapRef.current = true;
+        applyFinalLayout(swappedLayouts);
+        // Clear all swap states
+        swapPreviewRef.current = null;
+        setSwapPreview(null);
+        multiSwapPreviewRef.current = null;
+        setMultiSwapPreview(null);
+        dragStartLayoutRef.current = null;
+        draggingWidgetRef.current = null;
+        return;
+      }
+      // Swap not valid - fall through to apply newLayout with viewport enforcement
+    }
+
+    // Clear all swap states
+    swapPreviewRef.current = null;
+    setSwapPreview(null);
+    multiSwapPreviewRef.current = null;
+    setMultiSwapPreview(null);
+    dragStartLayoutRef.current = null;
+    draggingWidgetRef.current = null;
+
+    // For non-swap drops OR when swap is not valid, check if the new layout is valid
+    // before applying it - if it would cause widgets to go outside viewport, revert
+    const forcedNewLayout = forceLayoutsInViewport(newLayout, cols, maxRows);
+
+    // Check if any widget position changed significantly after forcing (would indicate out of bounds)
+    const hasSignificantChange = forcedNewLayout.some(forced => {
+      const original = newLayout.find(o => o.i === forced.i);
+      if (!original) return false;
+      // If position was forced to change, the original was out of bounds
+      return forced.x !== original.x || forced.y !== original.y;
+    });
+
+    if (hasSignificantChange) {
+      // The drop would place widgets outside viewport - use lastValidLayout instead
+      // but still allow the dragged widget to move to a valid position
+      justAppliedSwapRef.current = true;
+      updateLayouts(lastValidLayoutRef.current);
+    } else {
+      // Layout is valid - apply it
+      applyFinalLayout(newLayout);
     }
   }, [layouts, widgets, maxRows, updateLayouts, calculateMaxDimensions]);
 
@@ -818,6 +945,31 @@ export const DashboardLayout: React.FC = () => {
           >
             <span className="text-amber-600 text-sm font-medium">Moving here</span>
           </div>
+        </>
+      )}
+
+      {/* Feature 4b: Multi-swap preview - large widget swapping with multiple small widgets */}
+      {multiSwapPreview && (
+        <>
+          {/* Source widget's new position (where the large widget will go) */}
+          <div
+            className="absolute pointer-events-none z-50 border-2 border-solid border-violet-400 bg-violet-100/50 rounded-xl flex items-center justify-center animate-pulse"
+            style={getZoneStyle(multiSwapPreview.sourceNewPos) || undefined}
+          >
+            <span className="text-violet-600 text-sm font-medium">Swap here</span>
+          </div>
+          {/* Target widgets' new positions (where the small widgets will move to) */}
+          {multiSwapPreview.targetNewPositions.map((target, index) => (
+            <div
+              key={`multi-swap-target-${target.id}`}
+              className="absolute pointer-events-none z-50 border-2 border-solid border-amber-400 bg-amber-100/50 rounded-xl flex items-center justify-center animate-pulse"
+              style={getZoneStyle(target.pos) || undefined}
+            >
+              <span className="text-amber-600 text-sm font-medium">
+                {multiSwapPreview.targetIds.length > 1 ? `Moving ${index + 1}` : 'Moving here'}
+              </span>
+            </div>
+          ))}
         </>
       )}
 

@@ -15,12 +15,20 @@ export interface GridZone {
   h: number;
 }
 
-// Swap preview information
+// Swap preview information (single widget swap)
 export interface SwapPreview {
   sourceId: string;
   targetId: string;
   sourceNewPos: GridZone;
   targetNewPos: GridZone;
+}
+
+// Multi-widget swap preview information (large widget swapping with multiple small widgets)
+export interface MultiSwapPreview {
+  sourceId: string;
+  targetIds: string[];
+  sourceNewPos: GridZone;
+  targetNewPositions: { id: string; pos: GridZone }[];
 }
 
 // Push calculation result
@@ -139,6 +147,137 @@ export function findAllFitPositions(
   }
 
   return positions;
+}
+
+/**
+ * Clamp a position to ensure widget stays within viewport bounds
+ * @param x - X position
+ * @param y - Y position
+ * @param w - Widget width
+ * @param h - Widget height
+ * @param cols - Number of columns
+ * @param maxRows - Maximum rows
+ * @returns Clamped position
+ */
+export function clampToViewport(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  cols: number,
+  maxRows: number
+): { x: number; y: number } {
+  let clampedX = x;
+  let clampedY = y;
+
+  // Clamp to left/top bounds
+  if (clampedX < 0) clampedX = 0;
+  if (clampedY < 0) clampedY = 0;
+
+  // Clamp to right/bottom bounds
+  if (clampedX + w > cols) clampedX = Math.max(0, cols - w);
+  if (clampedY + h > maxRows) clampedY = Math.max(0, maxRows - h);
+
+  return { x: clampedX, y: clampedY };
+}
+
+/**
+ * Adjust all layouts to fit within viewport, finding valid positions for any that don't fit
+ * @param layouts - Array of layouts to adjust
+ * @param cols - Number of columns
+ * @param maxRows - Maximum rows
+ * @returns Adjusted layouts with all widgets within viewport
+ */
+export function adjustLayoutsToViewport(
+  layouts: GridItemLayout[],
+  cols: number,
+  maxRows: number
+): GridItemLayout[] {
+  const adjustedLayouts: GridItemLayout[] = [];
+  const occupancy = createOccupancyGrid([], cols, maxRows);
+
+  // Sort by position (top-left first) to maintain relative positions
+  const sortedLayouts = [...layouts].sort((a, b) => {
+    if (a.y !== b.y) return a.y - b.y;
+    return a.x - b.x;
+  });
+
+  for (const layout of sortedLayouts) {
+    // First, clamp the position to viewport
+    let { x, y } = clampToViewport(layout.x, layout.y, layout.w, layout.h, cols, maxRows);
+
+    // Check if clamped position is available
+    if (canFitAt(occupancy, x, y, layout.w, layout.h)) {
+      // Mark as occupied
+      for (let row = y; row < Math.min(y + layout.h, maxRows); row++) {
+        for (let col = x; col < Math.min(x + layout.w, cols); col++) {
+          if (occupancy.grid[row]) {
+            occupancy.grid[row][col] = true;
+          }
+        }
+      }
+      adjustedLayouts.push({ ...layout, x, y });
+    } else {
+      // Find nearest available position
+      const newPos = findBestPositionNearExported(occupancy, x, y, layout.w, layout.h, cols, maxRows);
+      if (newPos) {
+        // Mark as occupied
+        for (let row = newPos.y; row < Math.min(newPos.y + layout.h, maxRows); row++) {
+          for (let col = newPos.x; col < Math.min(newPos.x + layout.w, cols); col++) {
+            if (occupancy.grid[row]) {
+              occupancy.grid[row][col] = true;
+            }
+          }
+        }
+        adjustedLayouts.push({ ...layout, x: newPos.x, y: newPos.y });
+      } else {
+        // Last resort: find any available position
+        const anyPos = findFirstFitPosition(occupancy, layout.w, layout.h);
+        if (anyPos) {
+          for (let row = anyPos.y; row < Math.min(anyPos.y + layout.h, maxRows); row++) {
+            for (let col = anyPos.x; col < Math.min(anyPos.x + layout.w, cols); col++) {
+              if (occupancy.grid[row]) {
+                occupancy.grid[row][col] = true;
+              }
+            }
+          }
+          adjustedLayouts.push({ ...layout, x: anyPos.x, y: anyPos.y });
+        } else {
+          // Can't fit - keep original (clamped) position as fallback
+          adjustedLayouts.push({ ...layout, x, y });
+        }
+      }
+    }
+  }
+
+  // Final safety: force clamp all positions to ensure nothing is outside viewport
+  return adjustedLayouts.map(layout => {
+    const clamped = clampToViewport(layout.x, layout.y, layout.w, layout.h, cols, maxRows);
+    return { ...layout, x: clamped.x, y: clamped.y };
+  });
+}
+
+/**
+ * Force all layouts to fit within viewport bounds (simple clamp without collision detection)
+ * Use this as a last resort safety check
+ */
+export function forceLayoutsInViewport(
+  layouts: GridItemLayout[],
+  cols: number,
+  maxRows: number
+): GridItemLayout[] {
+  return layouts.map(layout => {
+    let x = layout.x;
+    let y = layout.y;
+
+    // Force within bounds
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x + layout.w > cols) x = Math.max(0, cols - layout.w);
+    if (y + layout.h > maxRows) y = Math.max(0, maxRows - layout.h);
+
+    return { ...layout, x, y };
+  });
 }
 
 /**
@@ -552,6 +691,451 @@ export function calculateResizeSpace(
 }
 
 /**
+ * Calculate swap preview positions for two widgets
+ * Returns the positions where both widgets would end up after a swap,
+ * with each widget keeping its original size
+ * @param layouts - Current layouts
+ * @param sourceId - Source widget ID (being dragged)
+ * @param targetId - Target widget ID (being swapped with)
+ * @param cols - Number of columns in the grid
+ * @param maxRows - Maximum rows in the grid
+ * @returns Preview positions for both widgets, or null if swap not possible
+ */
+export function calculateSwapPreview(
+  layouts: GridItemLayout[],
+  sourceId: string,
+  targetId: string,
+  cols: number,
+  maxRows: number
+): { sourceNewPos: GridZone; targetNewPos: GridZone } | null {
+  const sourceLayout = layouts.find(l => l.i === sourceId);
+  const targetLayout = layouts.find(l => l.i === targetId);
+
+  if (!sourceLayout || !targetLayout) {
+    return null;
+  }
+
+  // Create occupancy grid excluding both source and target widgets
+  const occupancy = createOccupancyGrid(layouts, cols, maxRows, sourceId);
+  // Also exclude target from the occupancy
+  for (let row = targetLayout.y; row < Math.min(targetLayout.y + targetLayout.h, maxRows); row++) {
+    for (let col = targetLayout.x; col < Math.min(targetLayout.x + targetLayout.w, cols); col++) {
+      if (occupancy.grid[row]) {
+        occupancy.grid[row][col] = false;
+      }
+    }
+  }
+
+  // Calculate where source would go (target's position, adjusted for source's size)
+  let sourceNewX = targetLayout.x;
+  let sourceNewY = targetLayout.y;
+
+  // Adjust if source doesn't fit at target's exact position due to size differences
+  if (sourceNewX + sourceLayout.w > cols) {
+    sourceNewX = cols - sourceLayout.w;
+  }
+  if (sourceNewX < 0) sourceNewX = 0;
+  if (sourceNewY + sourceLayout.h > maxRows) {
+    sourceNewY = maxRows - sourceLayout.h;
+  }
+  if (sourceNewY < 0) sourceNewY = 0;
+
+  // Calculate where target would go (source's position, adjusted for target's size)
+  let targetNewX = sourceLayout.x;
+  let targetNewY = sourceLayout.y;
+
+  // Adjust if target doesn't fit at source's exact position due to size differences
+  if (targetNewX + targetLayout.w > cols) {
+    targetNewX = cols - targetLayout.w;
+  }
+  if (targetNewX < 0) targetNewX = 0;
+  if (targetNewY + targetLayout.h > maxRows) {
+    targetNewY = maxRows - targetLayout.h;
+  }
+  if (targetNewY < 0) targetNewY = 0;
+
+  // Check if positions overlap - if so, we need to find alternative positions
+  const sourceNewZone: GridZone = { x: sourceNewX, y: sourceNewY, w: sourceLayout.w, h: sourceLayout.h };
+  const targetNewZone: GridZone = { x: targetNewX, y: targetNewY, w: targetLayout.w, h: targetLayout.h };
+
+  if (zonesOverlap(sourceNewZone, targetNewZone)) {
+    // Try to find non-overlapping positions
+    // Place source at target position, then find best spot for target near source's original position
+    const tempOccupancy = createOccupancyGrid(layouts, cols, maxRows, sourceId);
+    for (let row = targetLayout.y; row < Math.min(targetLayout.y + targetLayout.h, maxRows); row++) {
+      for (let col = targetLayout.x; col < Math.min(targetLayout.x + targetLayout.w, cols); col++) {
+        if (tempOccupancy.grid[row]) {
+          tempOccupancy.grid[row][col] = false;
+        }
+      }
+    }
+    // Mark source's new position as occupied
+    for (let row = sourceNewY; row < Math.min(sourceNewY + sourceLayout.h, maxRows); row++) {
+      for (let col = sourceNewX; col < Math.min(sourceNewX + sourceLayout.w, cols); col++) {
+        if (tempOccupancy.grid[row]) {
+          tempOccupancy.grid[row][col] = true;
+        }
+      }
+    }
+
+    // Find best position for target near source's original position
+    const targetPos = findBestPositionNearExported(
+      tempOccupancy,
+      sourceLayout.x,
+      sourceLayout.y,
+      targetLayout.w,
+      targetLayout.h,
+      cols,
+      maxRows
+    );
+
+    if (targetPos) {
+      targetNewX = targetPos.x;
+      targetNewY = targetPos.y;
+    } else {
+      return null; // Can't find valid swap positions
+    }
+  } else {
+    // Check if both can actually fit at their positions
+    const sourceCanFit = canFitAt(occupancy, sourceNewX, sourceNewY, sourceLayout.w, sourceLayout.h);
+
+    // Create occupancy with source placed to check target
+    const occupancyWithSource = createOccupancyGrid(layouts, cols, maxRows, sourceId);
+    for (let row = targetLayout.y; row < Math.min(targetLayout.y + targetLayout.h, maxRows); row++) {
+      for (let col = targetLayout.x; col < Math.min(targetLayout.x + targetLayout.w, cols); col++) {
+        if (occupancyWithSource.grid[row]) {
+          occupancyWithSource.grid[row][col] = false;
+        }
+      }
+    }
+    for (let row = sourceNewY; row < Math.min(sourceNewY + sourceLayout.h, maxRows); row++) {
+      for (let col = sourceNewX; col < Math.min(sourceNewX + sourceLayout.w, cols); col++) {
+        if (occupancyWithSource.grid[row]) {
+          occupancyWithSource.grid[row][col] = true;
+        }
+      }
+    }
+
+    const targetCanFit = canFitAt(occupancyWithSource, targetNewX, targetNewY, targetLayout.w, targetLayout.h);
+
+    if (!sourceCanFit || !targetCanFit) {
+      // Try to find alternative positions
+      if (!sourceCanFit) {
+        const sourcePos = findBestPositionNearExported(occupancy, targetLayout.x, targetLayout.y, sourceLayout.w, sourceLayout.h, cols, maxRows);
+        if (!sourcePos) return null;
+        sourceNewX = sourcePos.x;
+        sourceNewY = sourcePos.y;
+      }
+
+      // Recalculate occupancy with source placed
+      const newOccupancy = createOccupancyGrid(layouts, cols, maxRows, sourceId);
+      for (let row = targetLayout.y; row < Math.min(targetLayout.y + targetLayout.h, maxRows); row++) {
+        for (let col = targetLayout.x; col < Math.min(targetLayout.x + targetLayout.w, cols); col++) {
+          if (newOccupancy.grid[row]) {
+            newOccupancy.grid[row][col] = false;
+          }
+        }
+      }
+      for (let row = sourceNewY; row < Math.min(sourceNewY + sourceLayout.h, maxRows); row++) {
+        for (let col = sourceNewX; col < Math.min(sourceNewX + sourceLayout.w, cols); col++) {
+          if (newOccupancy.grid[row]) {
+            newOccupancy.grid[row][col] = true;
+          }
+        }
+      }
+
+      if (!canFitAt(newOccupancy, targetNewX, targetNewY, targetLayout.w, targetLayout.h)) {
+        const targetPos = findBestPositionNearExported(newOccupancy, sourceLayout.x, sourceLayout.y, targetLayout.w, targetLayout.h, cols, maxRows);
+        if (!targetPos) return null;
+        targetNewX = targetPos.x;
+        targetNewY = targetPos.y;
+      }
+    }
+  }
+
+  // Final validation: ensure both widgets are within viewport bounds
+  if (sourceNewX < 0 || sourceNewY < 0 ||
+      sourceNewX + sourceLayout.w > cols || sourceNewY + sourceLayout.h > maxRows) {
+    return null;
+  }
+  if (targetNewX < 0 || targetNewY < 0 ||
+      targetNewX + targetLayout.w > cols || targetNewY + targetLayout.h > maxRows) {
+    return null;
+  }
+
+  return {
+    sourceNewPos: { x: sourceNewX, y: sourceNewY, w: sourceLayout.w, h: sourceLayout.h },
+    targetNewPos: { x: targetNewX, y: targetNewY, w: targetLayout.w, h: targetLayout.h },
+  };
+}
+
+/**
+ * Exported version of findBestPositionNear for use in preview calculations
+ */
+export function findBestPositionNearExported(
+  occupancy: OccupancyGrid,
+  targetX: number,
+  targetY: number,
+  widgetW: number,
+  widgetH: number,
+  cols: number,
+  maxRows: number
+): { x: number; y: number } | null {
+  // First try the exact target position
+  if (canFitAt(occupancy, targetX, targetY, widgetW, widgetH)) {
+    return { x: targetX, y: targetY };
+  }
+
+  // Search in expanding rings around the target
+  const maxDistance = Math.max(cols, maxRows);
+
+  for (let distance = 1; distance < maxDistance; distance++) {
+    for (let dy = -distance; dy <= distance; dy++) {
+      for (let dx = -distance; dx <= distance; dx++) {
+        if (Math.abs(dx) !== distance && Math.abs(dy) !== distance) continue;
+
+        const x = targetX + dx;
+        const y = targetY + dy;
+
+        if (x < 0 || y < 0 || x + widgetW > cols || y + widgetH > maxRows) continue;
+
+        if (canFitAt(occupancy, x, y, widgetW, widgetH)) {
+          return { x, y };
+        }
+      }
+    }
+  }
+
+  return findFirstFitPosition(occupancy, widgetW, widgetH);
+}
+
+/**
+ * Find all widgets that would be overlapped if source widget is placed at a position
+ * @param layouts - Current layouts
+ * @param sourceId - Source widget ID (being dragged)
+ * @param targetX - Target X position for source widget
+ * @param targetY - Target Y position for source widget
+ * @param sourceW - Source widget width
+ * @param sourceH - Source widget height
+ * @returns Array of widget IDs that would be overlapped
+ */
+export function findOverlappedWidgets(
+  layouts: GridItemLayout[],
+  sourceId: string,
+  targetX: number,
+  targetY: number,
+  sourceW: number,
+  sourceH: number
+): GridItemLayout[] {
+  const sourceZone: GridZone = { x: targetX, y: targetY, w: sourceW, h: sourceH };
+  const overlapped: GridItemLayout[] = [];
+
+  for (const layout of layouts) {
+    if (layout.i === sourceId) continue;
+
+    const layoutZone: GridZone = { x: layout.x, y: layout.y, w: layout.w, h: layout.h };
+    if (zonesOverlap(sourceZone, layoutZone)) {
+      overlapped.push(layout);
+    }
+  }
+
+  return overlapped;
+}
+
+/**
+ * Calculate multi-widget swap preview
+ * When a large widget is dragged over multiple small widgets, this calculates
+ * where all affected widgets should move to
+ * @param layouts - Current layouts
+ * @param sourceId - Source widget ID (being dragged)
+ * @param targetX - Target X position where source wants to go
+ * @param targetY - Target Y position where source wants to go
+ * @param cols - Number of columns in the grid
+ * @param maxRows - Maximum rows in the grid
+ * @returns MultiSwapPreview with positions for all affected widgets, or null if not possible
+ */
+export function calculateMultiSwapPreview(
+  layouts: GridItemLayout[],
+  sourceId: string,
+  targetX: number,
+  targetY: number,
+  cols: number,
+  maxRows: number
+): MultiSwapPreview | null {
+  const sourceLayout = layouts.find(l => l.i === sourceId);
+  if (!sourceLayout) return null;
+
+  // FIRST: Clamp target position to fit within grid bounds
+  // This ensures consistency between overlap detection and final positions
+  let sourceNewX = targetX;
+  let sourceNewY = targetY;
+  if (sourceNewX + sourceLayout.w > cols) sourceNewX = cols - sourceLayout.w;
+  if (sourceNewX < 0) sourceNewX = 0;
+  if (sourceNewY + sourceLayout.h > maxRows) sourceNewY = maxRows - sourceLayout.h;
+  if (sourceNewY < 0) sourceNewY = 0;
+
+  // Find all widgets that would be overlapped by the source at the CLAMPED position
+  // This ensures we detect overlaps based on where the widget will actually land
+  const overlappedWidgets = findOverlappedWidgets(
+    layouts,
+    sourceId,
+    sourceNewX,  // Use clamped position
+    sourceNewY,  // Use clamped position
+    sourceLayout.w,
+    sourceLayout.h
+  );
+
+  if (overlappedWidgets.length === 0) return null;
+
+  const sourceNewZone: GridZone = { x: sourceNewX, y: sourceNewY, w: sourceLayout.w, h: sourceLayout.h };
+
+  // Create occupancy grid excluding source widget
+  const occupancy = createOccupancyGrid(layouts, cols, maxRows, sourceId);
+
+  // Clear all overlapped widgets from occupancy
+  for (const widget of overlappedWidgets) {
+    for (let row = widget.y; row < Math.min(widget.y + widget.h, maxRows); row++) {
+      for (let col = widget.x; col < Math.min(widget.x + widget.w, cols); col++) {
+        if (occupancy.grid[row]) {
+          occupancy.grid[row][col] = false;
+        }
+      }
+    }
+  }
+
+  // Mark source's new position as occupied
+  for (let row = sourceNewY; row < Math.min(sourceNewY + sourceLayout.h, maxRows); row++) {
+    for (let col = sourceNewX; col < Math.min(sourceNewX + sourceLayout.w, cols); col++) {
+      if (occupancy.grid[row]) {
+        occupancy.grid[row][col] = true;
+      }
+    }
+  }
+
+  // Try to place all overlapped widgets in the source's original space or nearby
+  const targetNewPositions: { id: string; pos: GridZone }[] = [];
+  // Create a deep copy of occupancy with explicit bounds to ensure viewport limits are respected
+  const workingOccupancy: OccupancyGrid = {
+    grid: occupancy.grid.map(row => [...row]),
+    cols: cols,
+    rows: maxRows
+  };
+
+  // Sort overlapped widgets by size (largest first) to place them more efficiently
+  const sortedWidgets = [...overlappedWidgets].sort((a, b) => (b.w * b.h) - (a.w * a.h));
+
+  for (const widget of sortedWidgets) {
+    // First try to place at source's original position
+    let newPos = findBestPositionNearExported(
+      workingOccupancy,
+      sourceLayout.x,
+      sourceLayout.y,
+      widget.w,
+      widget.h,
+      cols,
+      maxRows
+    );
+
+    if (!newPos) {
+      // Try to find any available position
+      newPos = findFirstFitPosition(workingOccupancy, widget.w, widget.h);
+    }
+
+    if (!newPos) {
+      // Can't place this widget - swap not possible
+      return null;
+    }
+
+    // Validate the position is within bounds BEFORE accepting it
+    if (newPos.x < 0 || newPos.y < 0 ||
+        newPos.x + widget.w > cols || newPos.y + widget.h > maxRows) {
+      // Position is outside viewport - swap not possible
+      return null;
+    }
+
+    // Mark this position as occupied
+    for (let row = newPos.y; row < Math.min(newPos.y + widget.h, maxRows); row++) {
+      for (let col = newPos.x; col < Math.min(newPos.x + widget.w, cols); col++) {
+        if (workingOccupancy.grid[row]) {
+          workingOccupancy.grid[row][col] = true;
+        }
+      }
+    }
+
+    targetNewPositions.push({
+      id: widget.i,
+      pos: { x: newPos.x, y: newPos.y, w: widget.w, h: widget.h }
+    });
+  }
+
+  // Final validation: ensure source is within bounds
+  if (sourceNewX < 0 || sourceNewY < 0 ||
+      sourceNewX + sourceLayout.w > cols || sourceNewY + sourceLayout.h > maxRows) {
+    return null;
+  }
+
+  // Final validation: ensure all target positions are within bounds
+  for (const target of targetNewPositions) {
+    if (target.pos.x < 0 || target.pos.y < 0 ||
+        target.pos.x + target.pos.w > cols || target.pos.y + target.pos.h > maxRows) {
+      return null;
+    }
+  }
+
+  return {
+    sourceId,
+    targetIds: overlappedWidgets.map(w => w.i),
+    sourceNewPos: sourceNewZone,
+    targetNewPositions
+  };
+}
+
+/**
+ * Execute multi-widget swap
+ * @param layouts - Current layouts
+ * @param multiSwapPreview - The multi-swap preview containing new positions
+ * @param cols - Number of columns in the grid
+ * @param maxRows - Maximum rows in the grid
+ * @returns New layouts with all widgets repositioned (adjusted to fit viewport)
+ */
+export function calculateMultiSwap(
+  layouts: GridItemLayout[],
+  multiSwapPreview: MultiSwapPreview,
+  cols?: number,
+  maxRows?: number
+): GridItemLayout[] {
+  const { sourceId, sourceNewPos, targetNewPositions } = multiSwapPreview;
+
+  // Default grid size if not provided
+  const gridCols = cols ?? 25;
+  const gridRows = maxRows ?? 20;
+
+  // Create a map of new positions
+  const newPositions = new Map<string, GridZone>();
+  newPositions.set(sourceId, sourceNewPos);
+  for (const target of targetNewPositions) {
+    newPositions.set(target.id, target.pos);
+  }
+
+  // Apply new positions to layouts
+  const newLayouts = layouts.map(l => {
+    const newPos = newPositions.get(l.i);
+    if (newPos) {
+      return {
+        ...l,
+        x: newPos.x,
+        y: newPos.y,
+        // Keep original w and h
+      };
+    }
+    return l;
+  });
+
+  // Adjust all layouts to ensure they fit within viewport
+  return adjustLayoutsToViewport(newLayouts, gridCols, gridRows);
+}
+
+/**
  * Calculate swap between two widgets
  * Widgets always keep their original sizes - positions are adjusted automatically
  * to fit the available space
@@ -774,8 +1358,8 @@ export function calculateSwap(
     }
   }
 
-  // Return swapped layouts with original sizes preserved
-  return layouts.map(l => {
+  // Create swapped layouts with original sizes preserved
+  const newLayouts = layouts.map(l => {
     if (l.i === sourceId) {
       return {
         ...l,
@@ -793,6 +1377,9 @@ export function calculateSwap(
     }
     return l;
   });
+
+  // Adjust all layouts to ensure they fit within viewport
+  return adjustLayoutsToViewport(newLayouts, gridCols, gridRows);
 }
 
 /**
