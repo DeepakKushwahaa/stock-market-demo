@@ -3,6 +3,7 @@ import type { GridItemLayout, WidgetInstance, WidgetType, DashboardLayoutState, 
 import { defaultLayoutState, GRID_CONFIG, DEFAULT_WIDGET_SIZES, LAYOUT_PRESETS } from '../utils/layoutDefaults';
 import { layoutService } from '../services/layoutService';
 import { calculateAutoAdjustForNewWidget, type WidgetMinSizes } from '../utils/gridHelpers';
+import { resizeLogger } from '../utils/resizeDebugLogger';
 
 // Preview widget position type
 interface PreviewWidget {
@@ -221,6 +222,7 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     setWidgets([]);
     setLayouts([]);
     layoutService.clearLayout();
+    resizeLogger.clear();
   }, []);
 
   const toggleWidgetPanel = useCallback(() => {

@@ -18,6 +18,7 @@ import {
   type GridZone,
   type WidgetMinSizes,
 } from '../../utils/gridHelpers';
+import { resizeLogger } from '../../utils/resizeDebugLogger';
 
 // Cast GridLayout to any to work around type definition issues
 const RGL = GridLayout as any;
@@ -64,6 +65,11 @@ export const DashboardLayout: React.FC = () => {
     movedWidgets: string[];
     shrunkWidgets: string[];
   } | null>(null);
+
+  // Clear resize debug logs on component mount (page refresh)
+  useEffect(() => {
+    resizeLogger.clear();
+  }, []);
 
   // Keep lastValidLayoutRef in sync when layouts change externally (adding/removing widgets)
   useEffect(() => {
@@ -455,7 +461,7 @@ export const DashboardLayout: React.FC = () => {
     else if (handleClass.includes('react-resizable-handle-n')) resizeDirectionRef.current = 'n';
     else resizeDirectionRef.current = 'e'; // Default to east
 
-    console.log('[DEBUG] handleResizeStart:', { widgetId: oldItem.i, direction: resizeDirectionRef.current, mouseX: e.clientX });
+    resizeLogger.startSession(oldItem.i, resizeDirectionRef.current);
 
     // Store the original layout at resize start - this is used for calculating push operations
     resizeStartLayoutRef.current = layouts.map(l => ({ ...l }));
@@ -501,15 +507,17 @@ export const DashboardLayout: React.FC = () => {
     isResizingRef.current = false;
     const cols = GRID_CONFIG.cols;
 
-    console.log('[DEBUG] handleResizeStop:', {
+    resizeLogger.log('RESIZE STOP', {
       hasResizePreview: !!resizePreview,
-      movedWidgets: resizePreview?.movedWidgets,
-      newLayoutsCount: resizePreview?.newLayouts?.length,
+      movedWidgets: resizePreview?.movedWidgets?.length ?? 0,
     });
 
     // Feature 6: Apply resize space management if preview is active
     if (resizePreview && resizePreview.newLayouts.length > 0) {
-      console.log('[DEBUG] Applying resize preview layouts:', resizePreview.newLayouts.map(l => ({ i: l.i, x: l.x, y: l.y, w: l.w })));
+      resizeLogger.log('APPLYING PREVIEW', {
+        layouts: resizePreview.newLayouts.map(l => `${l.i.slice(-8)}: x=${l.x}, w=${l.w}`)
+      });
+      resizeLogger.endSession();
       const maxDimensions = calculateMaxDimensions(resizePreview.newLayouts);
       const validLayout = resizePreview.newLayouts.map(item => {
         const widget = widgets.find(w => w.i === item.i);
@@ -775,21 +783,31 @@ export const DashboardLayout: React.FC = () => {
         const originalRightEdge = resizingLayout.x + resizingLayout.w;
         const originalLeftEdge = resizingLayout.x;
 
-        // Collect ALL widgets that are to the right/left of the resizing widget
-        // Include all widgets regardless of vertical position to prevent any from going outside viewport
-        const widgetsToPush: Array<{ id: string; origX: number; w: number; minW: number; y: number }> = [];
+        // Collect widgets that are to the right/left of the resizing widget
+        // Only include widgets that have VERTICAL OVERLAP with the resizing widget
+        // (widgets in a different row shouldn't block horizontal resize)
+        const widgetsToPush: Array<{ id: string; origX: number; w: number; minW: number; y: number; h: number }> = [];
 
         for (const l of baseLayouts) {
           if (l.i === resizingWidgetIdRef.current) continue;
 
-          if (isEastResize && l.x >= originalRightEdge) {
-            // Widget starts at or after our right edge - may need pushing
-            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y });
-          } else if (isWestResize && l.x + l.w <= originalLeftEdge) {
-            // Widget ends at or before our left edge - may need pushing
-            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y });
+          // Check for vertical overlap (widgets must be in the same horizontal band)
+          const hasVerticalOverlap = !(l.y >= resizingLayout.y + resizingLayout.h || l.y + l.h <= resizingLayout.y);
+
+          if (isEastResize && l.x >= originalRightEdge && hasVerticalOverlap) {
+            // Widget starts at or after our right edge AND overlaps vertically - may need pushing
+            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
+          } else if (isWestResize && l.x + l.w <= originalLeftEdge && hasVerticalOverlap) {
+            // Widget ends at or before our left edge AND overlaps vertically - may need pushing
+            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
           }
         }
+
+        resizeLogger.log('WIDGET COLLECTION', {
+          resizingWidget: `x=${resizingLayout.x}, y=${resizingLayout.y}, w=${resizingLayout.w}, h=${resizingLayout.h}`,
+          widgetsToRight: widgetsToPush.length,
+          widgets: widgetsToPush.map(w => `${w.id.slice(-8)}: x=${w.origX}, y=${w.y}, w=${w.w}, h=${w.h}`)
+        });
 
         // Group widgets by their X position - widgets at the same X are vertically stacked
         // For push calculation, we only care about the widest widget at each X position
@@ -810,7 +828,15 @@ export const DashboardLayout: React.FC = () => {
           }))
           .sort((a, b) => isEastResize ? a.x - b.x : b.x - a.x);
 
-        console.log('[DEBUG] uniquePositions:', JSON.stringify(uniquePositions.map(p => ({ x: p.x, maxW: p.maxW, count: p.widgets.length }))));
+        // Log widget positions
+        resizeLogger.logWidgetPositions('Resizing Widget', [{
+          id: resizingWidgetIdRef.current,
+          x: resizingLayout.x,
+          w: resizingLayout.w
+        }]);
+        resizeLogger.logWidgetPositions('Widgets to Push (grouped by X)',
+          uniquePositions.map(p => ({ id: `group@${p.x}`, x: p.x, w: p.maxW, rightEdge: p.x + p.maxW }))
+        );
 
         // Calculate push positions
         const newPositions: Map<string, number> = new Map();
@@ -824,6 +850,13 @@ export const DashboardLayout: React.FC = () => {
               const newX = currentEdge;
               if (newX + pos.maxW > GRID_CONFIG.cols) {
                 canPush = false;
+                resizeLogger.log('PUSH BLOCKED', {
+                  reason: `Widget group at x=${pos.x} would exceed viewport`,
+                  newX,
+                  maxW: pos.maxW,
+                  wouldEndAt: newX + pos.maxW,
+                  viewportCols: GRID_CONFIG.cols
+                });
                 break;
               }
               // Set new position for all widgets at this X
@@ -847,6 +880,11 @@ export const DashboardLayout: React.FC = () => {
               const newX = currentEdge - pos.maxW;
               if (newX < 0) {
                 canPush = false;
+                resizeLogger.log('PUSH BLOCKED', {
+                  reason: `Widget group at x=${pos.x} would go negative`,
+                  newX,
+                  maxW: pos.maxW
+                });
                 break;
               }
               for (const widget of pos.widgets) {
@@ -865,21 +903,43 @@ export const DashboardLayout: React.FC = () => {
         // If can't push, calculate max allowed width
         let finalW = requestedW;
         let finalX = isWestResize ? newLeftEdge : resizingLayout.x;
+        let maxAllowedWidth = requestedW;
 
-        console.log('[DEBUG] after push calc:', { canPush, newPositions: Array.from(newPositions.entries()) });
+        resizeLogger.logPushCalculation({
+          resizingWidget: { x: resizingLayout.x, w: resizingLayout.w, newRightEdge },
+          widgetsToPush: uniquePositions.map(p => ({ id: `group@${p.x}`, x: p.x, w: p.maxW })),
+          canPush,
+          newPositions: Array.from(newPositions.entries()),
+          cols: GRID_CONFIG.cols
+        });
 
         if (!canPush) {
           // Calculate max width based on the widest path through stacked widgets
           if (isEastResize) {
             // Find total width needed: sum of max widths at each unique X position
             const totalWidthNeeded = uniquePositions.reduce((sum, pos) => sum + pos.maxW, 0);
-            const maxAllowedWidth = GRID_CONFIG.cols - resizingLayout.x - totalWidthNeeded;
+            maxAllowedWidth = GRID_CONFIG.cols - resizingLayout.x - totalWidthNeeded;
             finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
+            resizeLogger.log('LIMIT CALCULATION (East)', {
+              viewportCols: GRID_CONFIG.cols,
+              resizingX: resizingLayout.x,
+              totalWidthNeeded,
+              formula: `${GRID_CONFIG.cols} - ${resizingLayout.x} - ${totalWidthNeeded} = ${maxAllowedWidth}`,
+              maxAllowedWidth,
+              requestedW,
+              finalW
+            });
           } else {
             const totalWidthNeeded = uniquePositions.reduce((sum, pos) => sum + pos.maxW, 0);
-            const maxAllowedWidth = resizingLayout.x + resizingLayout.w - totalWidthNeeded;
+            maxAllowedWidth = resizingLayout.x + resizingLayout.w - totalWidthNeeded;
             finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
             finalX = resizingLayout.x + resizingLayout.w - finalW;
+            resizeLogger.log('LIMIT CALCULATION (West)', {
+              totalWidthNeeded,
+              maxAllowedWidth,
+              finalW,
+              finalX
+            });
           }
 
           // Recalculate push positions with limited width
@@ -904,6 +964,10 @@ export const DashboardLayout: React.FC = () => {
               currentEdge = newX;
             }
           }
+          resizeLogger.log('RECALCULATED POSITIONS', {
+            newEdge,
+            newPositions: Array.from(newPositions.entries()).map(([id, x]) => `${id.slice(-8)}→${x}`)
+          });
         }
 
         // Apply DOM updates
@@ -1581,10 +1645,7 @@ export const DashboardLayout: React.FC = () => {
             onLayoutChange={handleLayoutChange}
             onDrop={handleDrop}
             onResizeStart={handleResizeStart}
-            onResize={(layout: GridItemLayout[], oldItem: GridItemLayout, newItem: GridItemLayout, placeholder: GridItemLayout, e: MouseEvent, element: HTMLElement) => {
-              console.log('[DEBUG] RGL onResize fired:', { oldW: oldItem.w, newW: newItem.w });
-              handleResize(layout, oldItem, newItem, placeholder, e, element);
-            }}
+            onResize={handleResize}
             onResizeStop={handleResizeStop}
             onDragStart={handleDragStart}
             onDragStop={handleDragStop}
