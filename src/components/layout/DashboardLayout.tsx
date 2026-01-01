@@ -775,65 +775,89 @@ export const DashboardLayout: React.FC = () => {
         const originalRightEdge = resizingLayout.x + resizingLayout.w;
         const originalLeftEdge = resizingLayout.x;
 
-        // Collect widgets that need to be pushed
-        const widgetsToPush: Array<{ id: string; origX: number; w: number; minW: number }> = [];
+        // Collect ALL widgets that are to the right/left of the resizing widget
+        // Include all widgets regardless of vertical position to prevent any from going outside viewport
+        const widgetsToPush: Array<{ id: string; origX: number; w: number; minW: number; y: number }> = [];
 
         for (const l of baseLayouts) {
           if (l.i === resizingWidgetIdRef.current) continue;
 
           if (isEastResize && l.x >= originalRightEdge) {
-            // Widget is to the right - may need pushing
-            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3 });
+            // Widget starts at or after our right edge - may need pushing
+            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y });
           } else if (isWestResize && l.x + l.w <= originalLeftEdge) {
-            // Widget is to the left - may need pushing
-            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3 });
+            // Widget ends at or before our left edge - may need pushing
+            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y });
           }
         }
+
+        // Group widgets by their X position - widgets at the same X are vertically stacked
+        // For push calculation, we only care about the widest widget at each X position
+        // But all widgets at that X need to move together
+        const widgetsByX = new Map<number, typeof widgetsToPush>();
+        for (const w of widgetsToPush) {
+          const existing = widgetsByX.get(w.origX) || [];
+          existing.push(w);
+          widgetsByX.set(w.origX, existing);
+        }
+
+        // Get unique X positions and the max width at each position
+        const uniquePositions = Array.from(widgetsByX.entries())
+          .map(([x, widgets]) => ({
+            x,
+            maxW: Math.max(...widgets.map(w => w.w)),
+            widgets
+          }))
+          .sort((a, b) => isEastResize ? a.x - b.x : b.x - a.x);
+
+        console.log('[DEBUG] uniquePositions:', JSON.stringify(uniquePositions.map(p => ({ x: p.x, maxW: p.maxW, count: p.widgets.length }))));
 
         // Calculate push positions
         const newPositions: Map<string, number> = new Map();
         let canPush = true;
 
         if (isEastResize) {
-          // Sort left to right
-          widgetsToPush.sort((a, b) => a.origX - b.origX);
-
           let currentEdge = newRightEdge;
-          for (const widget of widgetsToPush) {
-            if (currentEdge > widget.origX) {
-              // Need to push this widget
+          for (const pos of uniquePositions) {
+            if (currentEdge > pos.x) {
+              // Need to push all widgets at this X position
               const newX = currentEdge;
-              if (newX + widget.w > GRID_CONFIG.cols) {
+              if (newX + pos.maxW > GRID_CONFIG.cols) {
                 canPush = false;
                 break;
               }
-              newPositions.set(widget.id, newX);
-              currentEdge = newX + widget.w;
+              // Set new position for all widgets at this X
+              for (const widget of pos.widgets) {
+                newPositions.set(widget.id, newX);
+              }
+              currentEdge = newX + pos.maxW;
             } else {
-              // No collision, keep original position
-              newPositions.set(widget.id, widget.origX);
-              currentEdge = widget.origX + widget.w;
+              // No collision, keep original positions
+              for (const widget of pos.widgets) {
+                newPositions.set(widget.id, widget.origX);
+              }
+              currentEdge = pos.x + pos.maxW;
             }
           }
         } else {
-          // West resize - sort right to left
-          widgetsToPush.sort((a, b) => b.origX - a.origX);
-
           let currentEdge = newLeftEdge;
-          for (const widget of widgetsToPush) {
-            if (currentEdge < widget.origX + widget.w) {
-              // Need to push this widget
-              const newX = currentEdge - widget.w;
+          for (const pos of uniquePositions) {
+            if (currentEdge < pos.x + pos.maxW) {
+              // Need to push all widgets at this X position
+              const newX = currentEdge - pos.maxW;
               if (newX < 0) {
                 canPush = false;
                 break;
               }
-              newPositions.set(widget.id, newX);
+              for (const widget of pos.widgets) {
+                newPositions.set(widget.id, newX);
+              }
               currentEdge = newX;
             } else {
-              // No collision, keep original position
-              newPositions.set(widget.id, widget.origX);
-              currentEdge = widget.origX;
+              for (const widget of pos.widgets) {
+                newPositions.set(widget.id, widget.origX);
+              }
+              currentEdge = pos.x;
             }
           }
         }
@@ -842,16 +866,18 @@ export const DashboardLayout: React.FC = () => {
         let finalW = requestedW;
         let finalX = isWestResize ? newLeftEdge : resizingLayout.x;
 
+        console.log('[DEBUG] after push calc:', { canPush, newPositions: Array.from(newPositions.entries()) });
+
         if (!canPush) {
-          // Calculate max width based on how far we can push
+          // Calculate max width based on the widest path through stacked widgets
           if (isEastResize) {
-            // Sum of all widgets to the right
-            const totalWidthToRight = widgetsToPush.reduce((sum, w) => sum + w.w, 0);
-            const maxAllowedWidth = GRID_CONFIG.cols - resizingLayout.x - totalWidthToRight;
+            // Find total width needed: sum of max widths at each unique X position
+            const totalWidthNeeded = uniquePositions.reduce((sum, pos) => sum + pos.maxW, 0);
+            const maxAllowedWidth = GRID_CONFIG.cols - resizingLayout.x - totalWidthNeeded;
             finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
           } else {
-            const totalWidthToLeft = widgetsToPush.reduce((sum, w) => sum + w.w, 0);
-            const maxAllowedWidth = resizingLayout.x + resizingLayout.w - totalWidthToLeft;
+            const totalWidthNeeded = uniquePositions.reduce((sum, pos) => sum + pos.maxW, 0);
+            const maxAllowedWidth = resizingLayout.x + resizingLayout.w - totalWidthNeeded;
             finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
             finalX = resizingLayout.x + resizingLayout.w - finalW;
           }
@@ -862,15 +888,19 @@ export const DashboardLayout: React.FC = () => {
 
           if (isEastResize) {
             let currentEdge = newEdge;
-            for (const widget of widgetsToPush) {
-              newPositions.set(widget.id, currentEdge);
-              currentEdge += widget.w;
+            for (const pos of uniquePositions) {
+              for (const widget of pos.widgets) {
+                newPositions.set(widget.id, currentEdge);
+              }
+              currentEdge += pos.maxW;
             }
           } else {
             let currentEdge = newEdge;
-            for (const widget of [...widgetsToPush].reverse()) {
-              const newX = currentEdge - widget.w;
-              newPositions.set(widget.id, newX);
+            for (const pos of [...uniquePositions].reverse()) {
+              const newX = currentEdge - pos.maxW;
+              for (const widget of pos.widgets) {
+                newPositions.set(widget.id, newX);
+              }
               currentEdge = newX;
             }
           }
@@ -887,7 +917,7 @@ export const DashboardLayout: React.FC = () => {
         for (const widget of widgetsToPush) {
           const newX = newPositions.get(widget.id);
           if (newX !== undefined && newX !== widget.origX) {
-            moveWidgetDom(widget.id, newX, baseLayouts.find(l => l.i === widget.id)?.y ?? 0);
+            moveWidgetDom(widget.id, newX, widget.y);
             movedWidgetIds.push(widget.id);
           }
         }
