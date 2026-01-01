@@ -792,23 +792,46 @@ export const DashboardLayout: React.FC = () => {
         const originalRightEdge = resizingLayout.x + resizingLayout.w;
         const originalLeftEdge = resizingLayout.x;
 
-        // Collect widgets that are to the right/left of the resizing widget
-        // Only include widgets that have VERTICAL OVERLAP with the resizing widget
-        // (widgets in a different row shouldn't block horizontal resize)
+        // Collect ALL widgets that are to the right/left of the resizing widget
+        // Push all widgets regardless of vertical overlap - they all need to move together
+        // until they reach the viewport edge
         const widgetsToPush: Array<{ id: string; origX: number; w: number; minW: number; y: number; h: number }> = [];
 
         for (const l of baseLayouts) {
           if (l.i === resizingWidgetIdRef.current) continue;
 
-          // Check for vertical overlap (widgets must be in the same horizontal band)
-          const hasVerticalOverlap = !(l.y >= resizingLayout.y + resizingLayout.h || l.y + l.h <= resizingLayout.y);
+          // Push ALL widgets whose left edge is at or after our right edge (for east resize)
+          // or whose right edge is at or before our left edge (for west resize)
+          // This includes widgets that are not directly adjacent but still to the right/left
+          if (isEastResize && l.x >= originalRightEdge) {
+            // Widget starts at or after our right edge - may need pushing
+            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
+          } else if (isWestResize && l.x + l.w <= originalLeftEdge) {
+            // Widget ends at or before our left edge - may need pushing
+            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
+          }
+        }
 
-          if (isEastResize && l.x >= originalRightEdge && hasVerticalOverlap) {
-            // Widget starts at or after our right edge AND overlaps vertically - may need pushing
-            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
-          } else if (isWestResize && l.x + l.w <= originalLeftEdge && hasVerticalOverlap) {
-            // Widget ends at or before our left edge AND overlaps vertically - may need pushing
-            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
+        // Also collect widgets that are further right (not directly adjacent)
+        // These need to be pushed when closer widgets are pushed
+        if (isEastResize) {
+          for (const l of baseLayouts) {
+            if (l.i === resizingWidgetIdRef.current) continue;
+            // If widget is not already in the list and its left edge is after our current right edge
+            const alreadyIncluded = widgetsToPush.some(w => w.id === l.i);
+            if (!alreadyIncluded && l.x > resizingLayout.x) {
+              // Widget is somewhere to our right - include it for chain pushing
+              widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
+            }
+          }
+        } else if (isWestResize) {
+          for (const l of baseLayouts) {
+            if (l.i === resizingWidgetIdRef.current) continue;
+            const alreadyIncluded = widgetsToPush.some(w => w.id === l.i);
+            if (!alreadyIncluded && l.x + l.w < resizingLayout.x + resizingLayout.w) {
+              // Widget is somewhere to our left - include it for chain pushing
+              widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
+            }
           }
         }
 
@@ -847,64 +870,110 @@ export const DashboardLayout: React.FC = () => {
           uniquePositions.map(p => ({ id: `group@${p.x}`, x: p.x, w: p.maxW, rightEdge: p.x + p.maxW }))
         );
 
-        // Calculate push positions
+        // Calculate push positions - push ALL widgets to the right uniformly
         const newPositions: Map<string, number> = new Map();
         let canPush = true;
 
         if (isEastResize) {
-          let currentEdge = newRightEdge;
-          for (const pos of uniquePositions) {
-            if (currentEdge > pos.x) {
-              // Need to push all widgets at this X position
-              const newX = currentEdge;
-              if (newX + pos.maxW > GRID_CONFIG.cols) {
+          // Calculate how much we're expanding
+          const expandAmount = newRightEdge - originalRightEdge;
+
+          if (expandAmount > 0) {
+            if (widgetsToPush.length > 0) {
+              // Find the rightmost edge of all widgets to push
+              let rightmostEdge = 0;
+              for (const w of widgetsToPush) {
+                rightmostEdge = Math.max(rightmostEdge, w.origX + w.w);
+              }
+
+              // Calculate max expand allowed (so rightmost widget stays in viewport)
+              const maxExpandAllowed = GRID_CONFIG.cols - rightmostEdge;
+              const actualExpandAmount = Math.min(expandAmount, maxExpandAllowed);
+
+              resizeLogger.log('EAST RESIZE CALCULATION', {
+                requestedExpand: expandAmount,
+                rightmostEdge,
+                maxExpandAllowed,
+                actualExpandAmount,
+                viewportCols: GRID_CONFIG.cols
+              });
+
+              if (actualExpandAmount <= 0) {
+                // Can't expand at all - widgets are already at viewport edge
                 canPush = false;
-                resizeLogger.log('PUSH BLOCKED', {
-                  reason: `Widget group at x=${pos.x} would exceed viewport`,
-                  newX,
-                  maxW: pos.maxW,
-                  wouldEndAt: newX + pos.maxW,
-                  viewportCols: GRID_CONFIG.cols
-                });
-                break;
+              } else if (actualExpandAmount < expandAmount) {
+                // Partial expand - limit the resize
+                canPush = false; // Will trigger recalculation with limited width
+                // Push all widgets by the max allowed amount
+                for (const w of widgetsToPush) {
+                  newPositions.set(w.id, w.origX + actualExpandAmount);
+                }
+              } else {
+                // Full expand allowed - push all widgets
+                for (const w of widgetsToPush) {
+                  newPositions.set(w.id, w.origX + expandAmount);
+                }
               }
-              // Set new position for all widgets at this X
-              for (const widget of pos.widgets) {
-                newPositions.set(widget.id, newX);
-              }
-              currentEdge = newX + pos.maxW;
             } else {
-              // No collision, keep original positions
-              for (const widget of pos.widgets) {
-                newPositions.set(widget.id, widget.origX);
+              // No widgets to push - check if resizing widget itself would exceed viewport
+              if (newRightEdge > GRID_CONFIG.cols) {
+                canPush = false;
+                resizeLogger.log('EAST RESIZE BLOCKED - NO WIDGETS TO PUSH', {
+                  newRightEdge,
+                  viewportCols: GRID_CONFIG.cols,
+                  reason: 'Widget would exceed viewport with no widgets to push'
+                });
               }
-              currentEdge = pos.x + pos.maxW;
             }
           }
         } else {
-          let currentEdge = newLeftEdge;
-          for (const pos of uniquePositions) {
-            if (currentEdge < pos.x + pos.maxW) {
-              // Need to push all widgets at this X position
-              const newX = currentEdge - pos.maxW;
-              if (newX < 0) {
+          // West resize - calculate expand amount and push all widgets to the left
+          const expandAmount = originalLeftEdge - newLeftEdge;
+
+          if (expandAmount > 0) {
+            if (widgetsToPush.length > 0) {
+              // Find the leftmost edge of all widgets to push
+              let leftmostEdge = GRID_CONFIG.cols;
+              for (const w of widgetsToPush) {
+                leftmostEdge = Math.min(leftmostEdge, w.origX);
+              }
+
+              // Calculate max expand allowed (so leftmost widget stays in viewport)
+              const maxExpandAllowed = leftmostEdge;
+              const actualExpandAmount = Math.min(expandAmount, maxExpandAllowed);
+
+              resizeLogger.log('WEST RESIZE CALCULATION', {
+                requestedExpand: expandAmount,
+                leftmostEdge,
+                maxExpandAllowed,
+                actualExpandAmount
+              });
+
+              if (actualExpandAmount <= 0) {
+                // Can't expand at all - widgets are already at viewport edge
                 canPush = false;
-                resizeLogger.log('PUSH BLOCKED', {
-                  reason: `Widget group at x=${pos.x} would go negative`,
-                  newX,
-                  maxW: pos.maxW
-                });
-                break;
+              } else if (actualExpandAmount < expandAmount) {
+                // Partial expand - limit the resize
+                canPush = false; // Will trigger recalculation with limited width
+                // Push all widgets by the max allowed amount
+                for (const w of widgetsToPush) {
+                  newPositions.set(w.id, w.origX - actualExpandAmount);
+                }
+              } else {
+                // Full expand allowed - push all widgets to the left
+                for (const w of widgetsToPush) {
+                  newPositions.set(w.id, w.origX - expandAmount);
+                }
               }
-              for (const widget of pos.widgets) {
-                newPositions.set(widget.id, newX);
-              }
-              currentEdge = newX;
             } else {
-              for (const widget of pos.widgets) {
-                newPositions.set(widget.id, widget.origX);
+              // No widgets to push - check if resizing widget itself would go negative
+              if (newLeftEdge < 0) {
+                canPush = false;
+                resizeLogger.log('WEST RESIZE BLOCKED - NO WIDGETS TO PUSH', {
+                  newLeftEdge,
+                  reason: 'Widget would go negative with no widgets to push'
+                });
               }
-              currentEdge = pos.x;
             }
           }
         }
@@ -916,65 +985,97 @@ export const DashboardLayout: React.FC = () => {
 
         resizeLogger.logPushCalculation({
           resizingWidget: { x: resizingLayout.x, w: resizingLayout.w, newRightEdge },
-          widgetsToPush: uniquePositions.map(p => ({ id: `group@${p.x}`, x: p.x, w: p.maxW })),
+          widgetsToPush: widgetsToPush.map(w => ({ id: w.id, x: w.origX, w: w.w })),
           canPush,
           newPositions: Array.from(newPositions.entries()),
           cols: GRID_CONFIG.cols
         });
 
         if (!canPush) {
-          // Calculate max width based on the widest path through stacked widgets
           if (isEastResize) {
-            // Find total width needed: sum of max widths at each unique X position
-            const totalWidthNeeded = uniquePositions.reduce((sum, pos) => sum + pos.maxW, 0);
-            maxAllowedWidth = GRID_CONFIG.cols - resizingLayout.x - totalWidthNeeded;
-            finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
-            resizeLogger.log('LIMIT CALCULATION (East)', {
-              viewportCols: GRID_CONFIG.cols,
-              resizingX: resizingLayout.x,
-              totalWidthNeeded,
-              formula: `${GRID_CONFIG.cols} - ${resizingLayout.x} - ${totalWidthNeeded} = ${maxAllowedWidth}`,
-              maxAllowedWidth,
-              requestedW,
-              finalW
-            });
-          } else {
-            const totalWidthNeeded = uniquePositions.reduce((sum, pos) => sum + pos.maxW, 0);
-            maxAllowedWidth = resizingLayout.x + resizingLayout.w - totalWidthNeeded;
-            finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
-            finalX = resizingLayout.x + resizingLayout.w - finalW;
-            resizeLogger.log('LIMIT CALCULATION (West)', {
-              totalWidthNeeded,
-              maxAllowedWidth,
-              finalW,
-              finalX
-            });
-          }
-
-          // Recalculate push positions with limited width
-          newPositions.clear();
-          const newEdge = isEastResize ? resizingLayout.x + finalW : finalX;
-
-          if (isEastResize) {
-            let currentEdge = newEdge;
-            for (const pos of uniquePositions) {
-              for (const widget of pos.widgets) {
-                newPositions.set(widget.id, currentEdge);
+            if (widgetsToPush.length > 0) {
+              // Find rightmost edge of all widgets to push
+              let rightmostEdge = 0;
+              for (const w of widgetsToPush) {
+                rightmostEdge = Math.max(rightmostEdge, w.origX + w.w);
               }
-              currentEdge += pos.maxW;
+              // Max expand = viewport - rightmost edge
+              const maxExpand = GRID_CONFIG.cols - rightmostEdge;
+              maxAllowedWidth = resizingLayout.w + maxExpand;
+              finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
+
+              resizeLogger.log('LIMIT CALCULATION (East) - WITH WIDGETS', {
+                viewportCols: GRID_CONFIG.cols,
+                rightmostEdge,
+                maxExpand,
+                maxAllowedWidth,
+                requestedW,
+                finalW
+              });
+
+              // Recalculate push positions with limited width
+              const limitedExpandAmount = finalW - resizingLayout.w;
+              newPositions.clear();
+              for (const w of widgetsToPush) {
+                newPositions.set(w.id, w.origX + limitedExpandAmount);
+              }
+            } else {
+              // No widgets to push - limit to viewport edge
+              maxAllowedWidth = GRID_CONFIG.cols - resizingLayout.x;
+              finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
+
+              resizeLogger.log('LIMIT CALCULATION (East) - NO WIDGETS', {
+                viewportCols: GRID_CONFIG.cols,
+                resizingX: resizingLayout.x,
+                maxAllowedWidth,
+                requestedW,
+                finalW
+              });
             }
           } else {
-            let currentEdge = newEdge;
-            for (const pos of [...uniquePositions].reverse()) {
-              const newX = currentEdge - pos.maxW;
-              for (const widget of pos.widgets) {
-                newPositions.set(widget.id, newX);
+            if (widgetsToPush.length > 0) {
+              // Find leftmost edge of all widgets to push
+              let leftmostEdge = GRID_CONFIG.cols;
+              for (const w of widgetsToPush) {
+                leftmostEdge = Math.min(leftmostEdge, w.origX);
               }
-              currentEdge = newX;
+              // Max expand = leftmost edge (how far we can push to left before hitting 0)
+              const maxExpand = leftmostEdge;
+              maxAllowedWidth = resizingLayout.w + maxExpand;
+              finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
+              finalX = resizingLayout.x + resizingLayout.w - finalW;
+
+              resizeLogger.log('LIMIT CALCULATION (West) - WITH WIDGETS', {
+                leftmostEdge,
+                maxExpand,
+                maxAllowedWidth,
+                finalW,
+                finalX
+              });
+
+              // Recalculate push positions with limited width
+              const limitedExpandAmount = finalW - resizingLayout.w;
+              newPositions.clear();
+              for (const w of widgetsToPush) {
+                newPositions.set(w.id, w.origX - limitedExpandAmount);
+              }
+            } else {
+              // No widgets to push - limit to viewport edge (x=0)
+              maxAllowedWidth = resizingLayout.x + resizingLayout.w;
+              finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
+              finalX = resizingLayout.x + resizingLayout.w - finalW;
+
+              resizeLogger.log('LIMIT CALCULATION (West) - NO WIDGETS', {
+                maxAllowedWidth,
+                requestedW,
+                finalW,
+                finalX
+              });
             }
           }
+
           resizeLogger.log('RECALCULATED POSITIONS', {
-            newEdge,
+            finalW,
             newPositions: Array.from(newPositions.entries()).map(([id, x]) => `${id.slice(-8)}→${x}`)
           });
         }
