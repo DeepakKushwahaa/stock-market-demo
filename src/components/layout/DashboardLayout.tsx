@@ -753,7 +753,7 @@ export const DashboardLayout: React.FC = () => {
         const requestedW = resizingLayout.w + effectiveDeltaX;
         const minW = resizingLayout.minW ?? 3;
 
-        // If shrinking, just apply directly (no push needed)
+        // If shrinking, dependent widgets should return to original position (not follow)
         if (requestedW <= resizingLayout.w) {
           const limitedW = Math.max(minW, requestedW);
           const limitedX = isWestResize
@@ -765,11 +765,20 @@ export const DashboardLayout: React.FC = () => {
             moveWidgetDom(resizingWidgetIdRef.current, limitedX, resizingLayout.y);
           }
 
+          // Reset all dependent widgets to their ORIGINAL positions from baseLayouts
+          // (baseLayouts is the layout at resize START, before any pushing)
+          for (const l of baseLayouts) {
+            if (l.i !== resizingWidgetIdRef.current) {
+              moveWidgetDom(l.i, l.x, l.y);
+            }
+          }
+
+          // Build new layouts with resizing widget at new size, others at original positions
           const newLayouts = baseLayouts.map(l => {
             if (l.i === resizingWidgetIdRef.current) {
               return { ...l, x: limitedX, w: limitedW };
             }
-            return l;
+            return l; // Keep original position
           });
 
           setResizePreview({ newLayouts, movedWidgets: [], shrunkWidgets: [] });
