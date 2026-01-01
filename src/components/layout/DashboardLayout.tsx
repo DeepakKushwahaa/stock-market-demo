@@ -30,8 +30,14 @@ export const DashboardLayout: React.FC = () => {
 
   // Store the last valid layout to revert to if resize pushes widgets outside viewport
   const lastValidLayoutRef = useRef<GridItemLayout[]>(layouts);
+  // Store the layout at resize start (before any pushing happens)
+  const resizeStartLayoutRef = useRef<GridItemLayout[]>(layouts);
   const isResizingRef = useRef(false);
   const isDraggingRef = useRef(false);
+  // Store DOM element references at resize start for direct manipulation
+  const widgetDomMapRef = useRef<Map<string, HTMLElement>>(new Map());
+  // Track the last pushed layout during resize to allow incremental pushing
+  const lastPushedLayoutRef = useRef<GridItemLayout[] | null>(null);
 
   // Track available drop zones during drag
   const [availableZones, setAvailableZones] = useState<GridZone[]>([]);
@@ -420,20 +426,90 @@ export const DashboardLayout: React.FC = () => {
     }
   }, []);
 
-  // Handle resize start - store the current valid layout
-  const handleResizeStart = useCallback((_layout: GridItemLayout[], _oldItem: GridItemLayout, _newItem: GridItemLayout, _placeholder: GridItemLayout, _e: MouseEvent, _element: HTMLElement) => {
+  // Track resize state for mouse-based push detection
+  const resizingWidgetIdRef = useRef<string | null>(null);
+  const resizeStartMouseXRef = useRef<number>(0);
+  const resizeStartMouseYRef = useRef<number>(0);
+  const resizeDirectionRef = useRef<'e' | 'w' | 's' | 'n' | 'se' | 'sw' | 'ne' | 'nw' | null>(null);
+  // Track the maximum gridDeltaX reached during this resize operation (for smooth reverse)
+  const maxGridDeltaXRef = useRef<number>(0);
+
+  // Handle resize start - store the current valid layout and build DOM element map
+  const handleResizeStart = useCallback((_layout: GridItemLayout[], oldItem: GridItemLayout, _newItem: GridItemLayout, _placeholder: GridItemLayout, e: MouseEvent, _element: HTMLElement) => {
     isResizingRef.current = true;
+    resizingWidgetIdRef.current = oldItem.i;
+    resizeStartMouseXRef.current = e.clientX;
+    resizeStartMouseYRef.current = e.clientY;
+
+    // Detect resize direction from the handle being used
+    // IMPORTANT: Check corner handles (se, sw, ne, nw) BEFORE edge handles (e, w, s, n)
+    // because 'react-resizable-handle-se' also includes 'react-resizable-handle-s'
+    const handleClass = (e.target as HTMLElement)?.className || '';
+    if (handleClass.includes('react-resizable-handle-se')) resizeDirectionRef.current = 'se';
+    else if (handleClass.includes('react-resizable-handle-sw')) resizeDirectionRef.current = 'sw';
+    else if (handleClass.includes('react-resizable-handle-ne')) resizeDirectionRef.current = 'ne';
+    else if (handleClass.includes('react-resizable-handle-nw')) resizeDirectionRef.current = 'nw';
+    else if (handleClass.includes('react-resizable-handle-e')) resizeDirectionRef.current = 'e';
+    else if (handleClass.includes('react-resizable-handle-w')) resizeDirectionRef.current = 'w';
+    else if (handleClass.includes('react-resizable-handle-s')) resizeDirectionRef.current = 's';
+    else if (handleClass.includes('react-resizable-handle-n')) resizeDirectionRef.current = 'n';
+    else resizeDirectionRef.current = 'e'; // Default to east
+
+    console.log('[DEBUG] handleResizeStart:', { widgetId: oldItem.i, direction: resizeDirectionRef.current, mouseX: e.clientX });
+
+    // Store the original layout at resize start - this is used for calculating push operations
+    resizeStartLayoutRef.current = layouts.map(l => ({ ...l }));
     lastValidLayoutRef.current = layouts.map(l => ({ ...l }));
+    lastPushedLayoutRef.current = null; // Reset for new resize operation
+    maxGridDeltaXRef.current = 0; // Reset max expansion tracker
     setResizePreview(null);
-  }, [layouts]);
+
+    // Build widget DOM element map for direct manipulation during resize
+    if (containerRef.current && containerWidth > 0) {
+      const colWidth = (containerWidth - GRID_CONFIG.containerPadding[0] * 2 - GRID_CONFIG.margin[0] * (GRID_CONFIG.cols - 1)) / GRID_CONFIG.cols;
+      const gridItems = Array.from(containerRef.current.querySelectorAll('.react-grid-item')) as HTMLElement[];
+
+      widgetDomMapRef.current.clear();
+
+      // Match each layout position to its DOM element
+      for (const layout of layouts) {
+        const expectedPixelX = GRID_CONFIG.containerPadding[0] + layout.x * (colWidth + GRID_CONFIG.margin[0]);
+        const expectedPixelY = GRID_CONFIG.containerPadding[1] + layout.y * (GRID_CONFIG.rowHeight + GRID_CONFIG.margin[1]);
+
+        const matchingElement = gridItems.find((htmlItem) => {
+          const transform = htmlItem.style.transform;
+          if (transform) {
+            const match = transform.match(/translate\((-?\d+(?:\.\d+)?)px,\s*(-?\d+(?:\.\d+)?)px\)/);
+            if (match) {
+              const currentX = parseFloat(match[1]);
+              const currentY = parseFloat(match[2]);
+              return Math.abs(currentX - expectedPixelX) < 10 && Math.abs(currentY - expectedPixelY) < 10;
+            }
+          }
+          return false;
+        });
+
+        if (matchingElement) {
+          widgetDomMapRef.current.set(layout.i, matchingElement);
+        }
+      }
+    }
+  }, [layouts, containerWidth]);
 
   // Handle resize stop - apply space management or validate layout
   const handleResizeStop = useCallback((newLayout: GridItemLayout[], oldItem: GridItemLayout, newItem: GridItemLayout, _placeholder: GridItemLayout, _e: MouseEvent, _element: HTMLElement) => {
     isResizingRef.current = false;
     const cols = GRID_CONFIG.cols;
 
+    console.log('[DEBUG] handleResizeStop:', {
+      hasResizePreview: !!resizePreview,
+      movedWidgets: resizePreview?.movedWidgets,
+      newLayoutsCount: resizePreview?.newLayouts?.length,
+    });
+
     // Feature 6: Apply resize space management if preview is active
     if (resizePreview && resizePreview.newLayouts.length > 0) {
+      console.log('[DEBUG] Applying resize preview layouts:', resizePreview.newLayouts.map(l => ({ i: l.i, x: l.x, y: l.y, w: l.w })));
       const maxDimensions = calculateMaxDimensions(resizePreview.newLayouts);
       const validLayout = resizePreview.newLayouts.map(item => {
         const widget = widgets.find(w => w.i === item.i);
@@ -550,47 +626,726 @@ export const DashboardLayout: React.FC = () => {
     return minSizes;
   }, [widgets]);
 
+  // Move a widget's DOM element directly during resize for smooth visual feedback
+  const moveWidgetDom = useCallback((widgetId: string, gridX: number, gridY: number) => {
+    if (containerWidth === 0 || !containerRef.current) return;
+
+    const colWidth = (containerWidth - GRID_CONFIG.containerPadding[0] * 2 - GRID_CONFIG.margin[0] * (GRID_CONFIG.cols - 1)) / GRID_CONFIG.cols;
+
+    // Get the cached DOM element reference
+    const targetElement = widgetDomMapRef.current.get(widgetId);
+    if (!targetElement) return;
+
+    // Calculate new pixel position
+    const newPixelX = GRID_CONFIG.containerPadding[0] + gridX * (colWidth + GRID_CONFIG.margin[0]);
+    const newPixelY = GRID_CONFIG.containerPadding[1] + gridY * (GRID_CONFIG.rowHeight + GRID_CONFIG.margin[1]);
+
+    // Apply transform directly for smooth visual feedback
+    targetElement.style.transform = `translate(${newPixelX}px, ${newPixelY}px)`;
+  }, [containerWidth]);
+
+  // Resize a widget's DOM element directly during resize for smooth visual feedback
+  const resizeWidgetDom = useCallback((widgetId: string, gridW: number, gridH: number) => {
+    if (containerWidth === 0 || !containerRef.current) return;
+
+    const colWidth = (containerWidth - GRID_CONFIG.containerPadding[0] * 2 - GRID_CONFIG.margin[0] * (GRID_CONFIG.cols - 1)) / GRID_CONFIG.cols;
+
+    // Get the cached DOM element reference
+    const targetElement = widgetDomMapRef.current.get(widgetId);
+    if (!targetElement) return;
+
+    // Calculate new pixel dimensions
+    const newPixelW = gridW * colWidth + (gridW - 1) * GRID_CONFIG.margin[0];
+    const newPixelH = gridH * GRID_CONFIG.rowHeight + (gridH - 1) * GRID_CONFIG.margin[1];
+
+    // Apply size directly for smooth visual feedback
+    targetElement.style.width = `${newPixelW}px`;
+    targetElement.style.height = `${newPixelH}px`;
+  }, [containerWidth]);
+
+  // Track mouse movement during resize to detect push needs (bypasses react-grid-layout collision detection)
+  // IMPORTANT: This only activates when there's a COLLISION - otherwise let react-grid-layout handle it
+  // Supports both horizontal (east/west) and vertical (south/north) push behavior
+  useEffect(() => {
+    const handleMouseMove = (e: globalThis.MouseEvent) => {
+      if (!isResizingRef.current) return;
+      if (!resizingWidgetIdRef.current || !containerRef.current || containerWidth === 0) return;
+
+      const direction = resizeDirectionRef.current;
+      if (!direction) return;
+
+      const isEastResize = direction.includes('e');
+      const isWestResize = direction.includes('w');
+      const isSouthResize = direction.includes('s');
+      const isNorthResize = direction.includes('n');
+      const isCornerResize = direction.length === 2; // se, sw, ne, nw
+
+      const isHorizontalResize = isEastResize || isWestResize;
+      const isVerticalResize = isSouthResize || isNorthResize;
+
+      // If no resize direction we handle, return
+      if (!isHorizontalResize && !isVerticalResize) return;
+
+      const colWidth = (containerWidth - GRID_CONFIG.containerPadding[0] * 2 - GRID_CONFIG.margin[0] * (GRID_CONFIG.cols - 1)) / GRID_CONFIG.cols;
+      const cellWidth = colWidth + GRID_CONFIG.margin[0];
+      const cellHeight = GRID_CONFIG.rowHeight + GRID_CONFIG.margin[1];
+
+      const baseLayouts = resizeStartLayoutRef.current;
+      const resizingLayout = baseLayouts.find(l => l.i === resizingWidgetIdRef.current);
+      if (!resizingLayout) return;
+
+      // Calculate mouse deltas
+      const mouseDeltaX = e.clientX - resizeStartMouseXRef.current;
+      const mouseDeltaY = e.clientY - resizeStartMouseYRef.current;
+      const absMouseDeltaX = Math.abs(mouseDeltaX);
+      const absMouseDeltaY = Math.abs(mouseDeltaY);
+
+      // For corner resizes, determine which direction is dominant
+      let handleHorizontal = isHorizontalResize;
+      let handleVertical = isVerticalResize;
+
+      if (isCornerResize) {
+        // For corner resizes, only handle one direction at a time based on dominant movement
+        // Require 2x dominance to switch modes
+        const isHorizontalDominant = absMouseDeltaX > absMouseDeltaY * 2;
+        const isVerticalDominant = absMouseDeltaY > absMouseDeltaX * 2;
+
+        if (isHorizontalDominant) {
+          handleVertical = false;
+        } else if (isVerticalDominant) {
+          handleHorizontal = false;
+        } else {
+          // Neither is dominant enough - don't handle push, just constrain width if needed
+          if (lastPushedLayoutRef.current) {
+            for (const l of baseLayouts) {
+              if (l.i !== resizingWidgetIdRef.current) {
+                moveWidgetDom(l.i, l.x, l.y);
+              }
+            }
+            setResizePreview(null);
+            lastPushedLayoutRef.current = null;
+          }
+          // Constrain width to original during ambiguous corner resize
+          const element = widgetDomMapRef.current.get(resizingWidgetIdRef.current);
+          if (element) {
+            const originalPixelW = resizingLayout.w * colWidth + (resizingLayout.w - 1) * GRID_CONFIG.margin[0];
+            element.style.width = `${originalPixelW}px`;
+          }
+          return;
+        }
+      }
+
+      // Calculate grid deltas
+      const gridDeltaX = Math.round(mouseDeltaX / cellWidth);
+      const gridDeltaY = Math.round(mouseDeltaY / cellHeight);
+
+      // HORIZONTAL PUSH HANDLING (east/west)
+      if (handleHorizontal && !handleVertical) {
+        const effectiveDeltaX = isEastResize ? gridDeltaX : -gridDeltaX;
+
+        // If not expanding, reset and return
+        if ((isEastResize && gridDeltaX <= 0) || (isWestResize && gridDeltaX >= 0)) {
+          if (lastPushedLayoutRef.current) {
+            for (const l of baseLayouts) {
+              if (l.i !== resizingWidgetIdRef.current) {
+                moveWidgetDom(l.i, l.x, l.y);
+              }
+            }
+            setResizePreview(null);
+            lastPushedLayoutRef.current = null;
+          }
+          return;
+        }
+
+        const requestedW = resizingLayout.w + effectiveDeltaX;
+        const requestedX = isWestResize ? Math.max(0, resizingLayout.x - effectiveDeltaX) : resizingLayout.x;
+        const newRightEdge = requestedX + requestedW;
+        const newLeftEdge = requestedX;
+
+        // Check viewport bounds
+        if (newRightEdge > GRID_CONFIG.cols || newLeftEdge < 0) return;
+
+        const originalRightEdge = resizingLayout.x + resizingLayout.w;
+        const originalLeftEdge = resizingLayout.x;
+
+        // First, find widgets with direct vertical overlap that would collide
+        const directlyAffected: Array<{ id: string; origX: number; w: number; y: number; h: number }> = [];
+        let hasCollision = false;
+
+        for (const l of baseLayouts) {
+          if (l.i === resizingWidgetIdRef.current) continue;
+          const hasVerticalOverlap = !(l.y >= resizingLayout.y + resizingLayout.h || l.y + l.h <= resizingLayout.y);
+          if (!hasVerticalOverlap) continue;
+
+          if (isEastResize && l.x >= originalRightEdge) {
+            directlyAffected.push({ id: l.i, origX: l.x, w: l.w, y: l.y, h: l.h });
+            if (newRightEdge > l.x && newRightEdge > originalRightEdge) hasCollision = true;
+          } else if (isWestResize && l.x + l.w <= originalLeftEdge) {
+            directlyAffected.push({ id: l.i, origX: l.x, w: l.w, y: l.y, h: l.h });
+            if (newLeftEdge < l.x + l.w && newLeftEdge < originalLeftEdge) hasCollision = true;
+          }
+        }
+
+        if (!hasCollision) {
+          if (lastPushedLayoutRef.current) {
+            for (const l of baseLayouts) {
+              if (l.i !== resizingWidgetIdRef.current) {
+                moveWidgetDom(l.i, l.x, l.y);
+              }
+            }
+            setResizePreview(null);
+            lastPushedLayoutRef.current = null;
+          }
+          return;
+        }
+
+        // Now collect ALL widgets that might need to be pushed in a chain
+        // For east resize: all widgets to the right of original right edge
+        // For west resize: all widgets to the left of original left edge
+        const allPotentialWidgets: Array<{ id: string; origX: number; w: number; y: number; h: number }> = [];
+        for (const l of baseLayouts) {
+          if (l.i === resizingWidgetIdRef.current) continue;
+          if (isEastResize && l.x >= originalRightEdge) {
+            allPotentialWidgets.push({ id: l.i, origX: l.x, w: l.w, y: l.y, h: l.h });
+          } else if (isWestResize && l.x + l.w <= originalLeftEdge) {
+            allPotentialWidgets.push({ id: l.i, origX: l.x, w: l.w, y: l.y, h: l.h });
+          }
+        }
+
+        // Calculate push positions with chain collision detection
+        const newPositions: Map<string, number> = new Map();
+        let canPush = true;
+
+        if (isEastResize) {
+          // Sort left to right
+          allPotentialWidgets.sort((a, b) => a.origX - b.origX);
+
+          // First pass: calculate initial positions for directly affected widgets
+          let workingPositions: Map<string, number> = new Map();
+          for (const widget of allPotentialWidgets) {
+            workingPositions.set(widget.id, widget.origX);
+          }
+
+          // Iteratively push widgets until no more collisions
+          let changed = true;
+          let iterations = 0;
+          const maxIterations = 50; // Prevent infinite loops
+
+          while (changed && iterations < maxIterations) {
+            changed = false;
+            iterations++;
+
+            // Check resizing widget against all widgets
+            for (const widget of allPotentialWidgets) {
+              const currentX = workingPositions.get(widget.id)!;
+              // Check if resizing widget collides with this widget
+              const hasVerticalOverlap = !(widget.y >= resizingLayout.y + resizingLayout.h || widget.y + widget.h <= resizingLayout.y);
+              if (hasVerticalOverlap && newRightEdge > currentX) {
+                const newX = newRightEdge;
+                if (newX !== currentX) {
+                  if (newX + widget.w > GRID_CONFIG.cols) { canPush = false; break; }
+                  workingPositions.set(widget.id, newX);
+                  changed = true;
+                }
+              }
+            }
+
+            if (!canPush) break;
+
+            // Check widget-to-widget collisions (chain pushing)
+            for (let i = 0; i < allPotentialWidgets.length && canPush; i++) {
+              const widgetA = allPotentialWidgets[i];
+              const posA = workingPositions.get(widgetA.id)!;
+              const rightEdgeA = posA + widgetA.w;
+
+              for (let j = 0; j < allPotentialWidgets.length; j++) {
+                if (i === j) continue;
+                const widgetB = allPotentialWidgets[j];
+                const posB = workingPositions.get(widgetB.id)!;
+
+                // Check if A and B have vertical overlap
+                const hasVerticalOverlapAB = !(widgetA.y >= widgetB.y + widgetB.h || widgetA.y + widgetA.h <= widgetB.y);
+                if (!hasVerticalOverlapAB) continue;
+
+                // If A's right edge overlaps B's position, push B
+                if (rightEdgeA > posB && posA < posB) {
+                  const newX = rightEdgeA;
+                  if (newX !== posB) {
+                    if (newX + widgetB.w > GRID_CONFIG.cols) { canPush = false; break; }
+                    workingPositions.set(widgetB.id, newX);
+                    changed = true;
+                  }
+                }
+              }
+            }
+          }
+
+          if (canPush) {
+            for (const [id, x] of workingPositions) {
+              newPositions.set(id, x);
+            }
+          }
+        } else {
+          // West resize - sort right to left
+          allPotentialWidgets.sort((a, b) => b.origX - a.origX);
+
+          let workingPositions: Map<string, number> = new Map();
+          for (const widget of allPotentialWidgets) {
+            workingPositions.set(widget.id, widget.origX);
+          }
+
+          let changed = true;
+          let iterations = 0;
+          const maxIterations = 50;
+
+          while (changed && iterations < maxIterations) {
+            changed = false;
+            iterations++;
+
+            for (const widget of allPotentialWidgets) {
+              const currentX = workingPositions.get(widget.id)!;
+              const hasVerticalOverlap = !(widget.y >= resizingLayout.y + resizingLayout.h || widget.y + widget.h <= resizingLayout.y);
+              if (hasVerticalOverlap && newLeftEdge < currentX + widget.w) {
+                const newX = newLeftEdge - widget.w;
+                if (newX !== currentX) {
+                  if (newX < 0) { canPush = false; break; }
+                  workingPositions.set(widget.id, newX);
+                  changed = true;
+                }
+              }
+            }
+
+            if (!canPush) break;
+
+            for (let i = 0; i < allPotentialWidgets.length && canPush; i++) {
+              const widgetA = allPotentialWidgets[i];
+              const posA = workingPositions.get(widgetA.id)!;
+
+              for (let j = 0; j < allPotentialWidgets.length; j++) {
+                if (i === j) continue;
+                const widgetB = allPotentialWidgets[j];
+                const posB = workingPositions.get(widgetB.id)!;
+
+                const hasVerticalOverlapAB = !(widgetA.y >= widgetB.y + widgetB.h || widgetA.y + widgetA.h <= widgetB.y);
+                if (!hasVerticalOverlapAB) continue;
+
+                if (posA < posB + widgetB.w && posA > posB) {
+                  const newX = posA - widgetB.w;
+                  if (newX !== posB) {
+                    if (newX < 0) { canPush = false; break; }
+                    workingPositions.set(widgetB.id, newX);
+                    changed = true;
+                  }
+                }
+              }
+            }
+          }
+
+          if (canPush) {
+            for (const [id, x] of workingPositions) {
+              newPositions.set(id, x);
+            }
+          }
+        }
+
+        if (!canPush) return;
+
+        // Update DOM
+        resizeWidgetDom(resizingWidgetIdRef.current, requestedW, resizingLayout.h);
+        if (isWestResize) {
+          moveWidgetDom(resizingWidgetIdRef.current, requestedX, resizingLayout.y);
+        }
+
+        const movedWidgetIds: string[] = [];
+        for (const widget of allPotentialWidgets) {
+          const newX = newPositions.get(widget.id);
+          if (newX !== undefined) {
+            moveWidgetDom(widget.id, newX, widget.y);
+            if (newX !== widget.origX) movedWidgetIds.push(widget.id);
+          }
+        }
+
+        const newLayouts = baseLayouts.map(l => {
+          if (l.i === resizingWidgetIdRef.current) return { ...l, x: requestedX, w: requestedW };
+          const newX = newPositions.get(l.i);
+          if (newX !== undefined) return { ...l, x: newX };
+          return l;
+        });
+
+        setResizePreview({ newLayouts, movedWidgets: movedWidgetIds, shrunkWidgets: [] });
+        lastPushedLayoutRef.current = newLayouts;
+        return;
+      }
+
+      // VERTICAL PUSH HANDLING (south/north)
+      if (handleVertical && !handleHorizontal) {
+        const effectiveDeltaY = isSouthResize ? gridDeltaY : -gridDeltaY;
+
+        // If not expanding, reset and return
+        if ((isSouthResize && gridDeltaY <= 0) || (isNorthResize && gridDeltaY >= 0)) {
+          if (lastPushedLayoutRef.current) {
+            for (const l of baseLayouts) {
+              if (l.i !== resizingWidgetIdRef.current) {
+                moveWidgetDom(l.i, l.x, l.y);
+              }
+            }
+            setResizePreview(null);
+            lastPushedLayoutRef.current = null;
+          }
+          return;
+        }
+
+        const requestedH = resizingLayout.h + effectiveDeltaY;
+        const requestedY = isNorthResize ? Math.max(0, resizingLayout.y - effectiveDeltaY) : resizingLayout.y;
+        const newBottomEdge = requestedY + requestedH;
+        const newTopEdge = requestedY;
+
+        // Check viewport bounds
+        if (newBottomEdge > maxRows || newTopEdge < 0) return;
+
+        // Collect widgets that could be affected (have horizontal overlap)
+        const potentialWidgets: Array<{ id: string; origY: number; h: number; x: number; w: number }> = [];
+        let hasCollision = false;
+        const originalBottomEdge = resizingLayout.y + resizingLayout.h;
+        const originalTopEdge = resizingLayout.y;
+
+        for (const l of baseLayouts) {
+          if (l.i === resizingWidgetIdRef.current) continue;
+          const hasHorizontalOverlap = !(l.x >= resizingLayout.x + resizingLayout.w || l.x + l.w <= resizingLayout.x);
+          if (!hasHorizontalOverlap) continue;
+
+          if (isSouthResize && l.y >= originalBottomEdge) {
+            potentialWidgets.push({ id: l.i, origY: l.y, h: l.h, x: l.x, w: l.w });
+            if (newBottomEdge > l.y && newBottomEdge > originalBottomEdge) hasCollision = true;
+          } else if (isNorthResize && l.y + l.h <= originalTopEdge) {
+            potentialWidgets.push({ id: l.i, origY: l.y, h: l.h, x: l.x, w: l.w });
+            if (newTopEdge < l.y + l.h && newTopEdge < originalTopEdge) hasCollision = true;
+          }
+        }
+
+        if (!hasCollision) {
+          if (lastPushedLayoutRef.current) {
+            for (const l of baseLayouts) {
+              if (l.i !== resizingWidgetIdRef.current) {
+                moveWidgetDom(l.i, l.x, l.y);
+              }
+            }
+            setResizePreview(null);
+            lastPushedLayoutRef.current = null;
+          }
+          return;
+        }
+
+        // Calculate push positions
+        const newPositions: Map<string, number> = new Map();
+        let canPush = true;
+
+        if (isSouthResize) {
+          // Sort top to bottom (closest first)
+          potentialWidgets.sort((a, b) => a.origY - b.origY);
+          let currentBottomEdge = newBottomEdge;
+          for (const widget of potentialWidgets) {
+            if (currentBottomEdge > widget.origY) {
+              const newY = currentBottomEdge;
+              if (newY + widget.h > maxRows) { canPush = false; break; }
+              newPositions.set(widget.id, newY);
+              currentBottomEdge = newY + widget.h;
+            } else {
+              newPositions.set(widget.id, widget.origY);
+              currentBottomEdge = widget.origY + widget.h;
+            }
+          }
+        } else {
+          // Sort bottom to top (closest first)
+          potentialWidgets.sort((a, b) => b.origY - a.origY);
+          let currentTopEdge = newTopEdge;
+          for (const widget of potentialWidgets) {
+            if (currentTopEdge < widget.origY + widget.h) {
+              const newY = currentTopEdge - widget.h;
+              if (newY < 0) { canPush = false; break; }
+              newPositions.set(widget.id, newY);
+              currentTopEdge = newY;
+            } else {
+              newPositions.set(widget.id, widget.origY);
+              currentTopEdge = widget.origY;
+            }
+          }
+        }
+
+        if (!canPush) return;
+
+        // Update DOM
+        resizeWidgetDom(resizingWidgetIdRef.current, resizingLayout.w, requestedH);
+        if (isNorthResize) {
+          moveWidgetDom(resizingWidgetIdRef.current, resizingLayout.x, requestedY);
+        }
+
+        const movedWidgetIds: string[] = [];
+        for (const widget of potentialWidgets) {
+          const newY = newPositions.get(widget.id);
+          if (newY !== undefined) {
+            moveWidgetDom(widget.id, widget.x, newY);
+            if (newY !== widget.origY) movedWidgetIds.push(widget.id);
+          }
+        }
+
+        const newLayouts = baseLayouts.map(l => {
+          if (l.i === resizingWidgetIdRef.current) return { ...l, y: requestedY, h: requestedH };
+          const newY = newPositions.get(l.i);
+          if (newY !== undefined) return { ...l, y: newY };
+          return l;
+        });
+
+        setResizePreview({ newLayouts, movedWidgets: movedWidgetIds, shrunkWidgets: [] });
+        lastPushedLayoutRef.current = newLayouts;
+        return;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    return () => document.removeEventListener('mousemove', handleMouseMove);
+  }, [containerWidth, maxRows, resizeWidgetDom, moveWidgetDom]);
+
   // Feature 6: Handle resize to detect space management needs
   // Supports resizing from all directions (top, bottom, left, right)
+  // This function directly manipulates DOM for smooth visual feedback during resize
   const handleResize = useCallback((
     _layout: GridItemLayout[],
     oldItem: GridItemLayout,
     newItem: GridItemLayout,
     _placeholder: GridItemLayout,
-    _e: MouseEvent,
+    e: MouseEvent,
     _element: HTMLElement
   ) => {
+    console.log('[DEBUG] handleResize called');
+    try {
+    const widgetMinSizes = getWidgetMinSizes();
+    // Use resizeStartLayoutRef.current which contains the layout at resize start
+    // This ensures we're always calculating based on the original positions
+    const baseLayouts = resizeStartLayoutRef.current;
+
+    // For corner resizes (se, sw, ne, nw), check if user is primarily resizing vertically
+    // If so, constrain width to prevent accidental horizontal resize
+    const direction = resizeDirectionRef.current;
+    const isCornerResize = direction && direction.length === 2;
+
+    if (isCornerResize) {
+      const mouseDeltaX = Math.abs(e.clientX - resizeStartMouseXRef.current);
+      const mouseDeltaY = Math.abs(e.clientY - resizeStartMouseYRef.current);
+
+      // If vertical movement is dominant (more than horizontal), constrain width to original
+      // This prevents width from changing when user intends to only resize height
+      if (mouseDeltaY > mouseDeltaX) {
+        const originalLayout = baseLayouts.find(l => l.i === newItem.i);
+        if (originalLayout) {
+          newItem = { ...newItem, w: originalLayout.w, x: originalLayout.x };
+        }
+      }
+    }
+
+    // Get the original layout to check maxW constraint
+    const originalLayout = baseLayouts.find(l => l.i === newItem.i);
+
     // Check if this is an enlargement (size increased OR position moved to expand)
+    // OR if we're at the maxW/maxH boundary (react-grid-layout blocks further resize)
     // Enlargement can happen in any direction:
     // - Right/Bottom: w or h increases
     // - Left: x decreases (widget expands left)
     // - Top: y decreases (widget expands up)
+    const isAtMaxWBoundary = originalLayout?.maxW !== undefined && newItem.w >= originalLayout.maxW && newItem.x === oldItem.x;
+    const isAtMaxHBoundary = originalLayout?.maxH !== undefined && newItem.h >= originalLayout.maxH && newItem.y === oldItem.y;
+
+    // Check if we're touching or overlapping a dependent widget (need to push)
+    // Use lastPushedLayoutRef if available (for incremental pushing), otherwise use baseLayouts
+    const currentLayouts = lastPushedLayoutRef.current || baseLayouts;
+
+    // Find widgets to the right that we're touching or would overlap
+    const newRightEdge = newItem.x + newItem.w;
+    let touchingWidgetRight = false;
+    let rightWidgetId: string | null = null;
+
+    for (const l of currentLayouts) {
+      if (l.i === newItem.i) continue;
+      // Has vertical overlap
+      const hasVerticalOverlap = !(l.y >= newItem.y + newItem.h || l.y + l.h <= newItem.y);
+      if (!hasVerticalOverlap) continue;
+
+      // Widget is adjacent to our right edge OR we would overlap it
+      const isAdjacent = l.x === newRightEdge;
+      const wouldOverlap = l.x < newRightEdge && l.x + l.w > newItem.x;
+
+      if (isAdjacent || wouldOverlap) {
+        touchingWidgetRight = true;
+        rightWidgetId = l.i;
+        break;
+      }
+    }
+
+    // Check for bottom touch
+    const newBottomEdge = newItem.y + newItem.h;
+    let touchingWidgetBottom = false;
+
+    for (const l of currentLayouts) {
+      if (l.i === newItem.i) continue;
+      const hasHorizontalOverlap = !(l.x >= newItem.x + newItem.w || l.x + l.w <= newItem.x);
+      if (!hasHorizontalOverlap) continue;
+
+      const isAdjacent = l.y === newBottomEdge;
+      const wouldOverlap = l.y < newBottomEdge && l.y + l.h > newItem.y;
+
+      if (isAdjacent || wouldOverlap) {
+        touchingWidgetBottom = true;
+        break;
+      }
+    }
+
+    console.log('[DEBUG] handleResize entry:', {
+      newItem: { i: newItem.i, x: newItem.x, y: newItem.y, w: newItem.w, h: newItem.h },
+      oldItem: { i: oldItem.i, x: oldItem.x, y: oldItem.y, w: oldItem.w, h: oldItem.h },
+      originalLayout: originalLayout ? { maxW: originalLayout.maxW, maxH: originalLayout.maxH, w: originalLayout.w, h: originalLayout.h } : null,
+      isAtMaxWBoundary,
+      isAtMaxHBoundary,
+      touchingWidgetRight,
+      rightWidgetId,
+      touchingWidgetBottom,
+      currentLayoutsCount: currentLayouts.length,
+    });
+
     const isEnlarging =
       newItem.w > oldItem.w ||
       newItem.h > oldItem.h ||
       newItem.x < oldItem.x ||
-      newItem.y < oldItem.y;
+      newItem.y < oldItem.y ||
+      isAtMaxWBoundary ||
+      isAtMaxHBoundary;
 
-    if (isEnlarging) {
-      const widgetMinSizes = getWidgetMinSizes();
+    // Also trigger push logic if we're touching a widget and trying to enlarge
+    const shouldTryPush = isEnlarging ||
+      (touchingWidgetRight && newItem.w >= oldItem.w) ||
+      (touchingWidgetBottom && newItem.h >= oldItem.h);
+
+    console.log('[DEBUG] isEnlarging:', isEnlarging, 'shouldTryPush:', shouldTryPush);
+
+    if (shouldTryPush) {
+      // If newItem.w equals maxW, the user might be trying to resize further
+      // but react-grid-layout is blocking it. In this case, we should try to push
+      // with w + 1 to trigger the push behavior
+      let requestedW = newItem.w;
+      let requestedH = newItem.h;
+
+      // Use the last pushed layout if available for incremental pushing
+      const layoutsForCalculation = lastPushedLayoutRef.current || baseLayouts;
+
+      // Check if we're at the maxW boundary OR touching a widget and trying to resize right
+      // IMPORTANT: Only consider horizontal push if the resize direction includes east ('e')
+      // Don't trigger horizontal push for pure south ('s') or north ('n') resizes
+      const direction = resizeDirectionRef.current;
+      const isResizingEast = direction?.includes('e') ?? false;
+      const isResizingSouth = direction?.includes('s') ?? false;
+
+      const shouldPushRight = isResizingEast && (isAtMaxWBoundary || (touchingWidgetRight && newItem.w >= oldItem.w && newItem.x === oldItem.x));
+      const shouldPushDown = isResizingSouth && (isAtMaxHBoundary || (touchingWidgetBottom && newItem.h >= oldItem.h && newItem.y === oldItem.y));
+
+      if (shouldPushRight) {
+        // User is trying to resize beyond current boundary
+        // Calculate based on where dependent widgets have been pushed to
+        if (lastPushedLayoutRef.current) {
+          // Find where the resizing widget was in the last push
+          const lastResizingLayout = lastPushedLayoutRef.current.find(l => l.i === newItem.i);
+          if (lastResizingLayout) {
+            // Request one more than the last pushed width
+            requestedW = lastResizingLayout.w + 1;
+          }
+        } else {
+          // First push - request one more column
+          requestedW = newItem.w + 1;
+        }
+        console.log('[DEBUG] Pushing right, requesting w:', requestedW);
+      }
+
+      if (shouldPushDown) {
+        if (lastPushedLayoutRef.current) {
+          const lastResizingLayout = lastPushedLayoutRef.current.find(l => l.i === newItem.i);
+          if (lastResizingLayout) {
+            requestedH = lastResizingLayout.h + 1;
+          }
+        } else {
+          requestedH = newItem.h + 1;
+        }
+        console.log('[DEBUG] Pushing down, requesting h:', requestedH);
+      }
+
+      console.log('[DEBUG] handleResize - newItem:', { i: newItem.i, x: newItem.x, y: newItem.y, w: newItem.w, h: newItem.h });
+      console.log('[DEBUG] handleResize - oldItem:', { i: oldItem.i, x: oldItem.x, y: oldItem.y, w: oldItem.w, h: oldItem.h });
+      console.log('[DEBUG] handleResize - requested:', { w: requestedW, h: requestedH });
+
       const result = calculateResizeSpace(
-        layouts,
+        layoutsForCalculation,
         newItem.i,
         newItem.x,
         newItem.y,
-        newItem.w,
-        newItem.h,
+        requestedW,
+        requestedH,
         GRID_CONFIG.cols,
         maxRows,
         widgetMinSizes
       );
 
-      if (result.canResize && (result.movedWidgets.length > 0 || result.shrunkWidgets.length > 0)) {
-        setResizePreview({
-          newLayouts: result.newLayouts,
-          movedWidgets: result.movedWidgets,
-          shrunkWidgets: result.shrunkWidgets,
+      console.log('[DEBUG] handleResize - result:', {
+        canResize: result.canResize,
+        movedWidgets: result.movedWidgets,
+        shrunkWidgets: result.shrunkWidgets,
+        newLayoutsCount: result.newLayouts.length
+      });
+
+      if (result.canResize) {
+        // Check if the resize actually changed anything compared to current state
+        const resizingLayout = result.newLayouts.find(l => l.i === newItem.i);
+        const currentResizingLayout = lastPushedLayoutRef.current?.find(l => l.i === newItem.i) || baseLayouts.find(l => l.i === newItem.i);
+
+        const hasChanges = result.movedWidgets.length > 0 ||
+                           result.shrunkWidgets.length > 0 ||
+                           (resizingLayout && currentResizingLayout &&
+                            (resizingLayout.w !== currentResizingLayout.w || resizingLayout.h !== currentResizingLayout.h));
+
+        console.log('[DEBUG] hasChanges check:', {
+          hasChanges,
+          movedWidgetsLength: result.movedWidgets.length,
+          shrunkWidgetsLength: result.shrunkWidgets.length,
+          resizingLayout: resizingLayout ? { w: resizingLayout.w, h: resizingLayout.h } : null,
+          currentResizingLayout: currentResizingLayout ? { w: currentResizingLayout.w, h: currentResizingLayout.h } : null,
         });
+
+        if (hasChanges) {
+          // Store the preview for handleResizeStop to apply
+          setResizePreview({
+            newLayouts: result.newLayouts,
+            movedWidgets: result.movedWidgets,
+            shrunkWidgets: result.shrunkWidgets,
+          });
+
+          // Save the pushed layout for incremental pushing on next resize event
+          lastPushedLayoutRef.current = result.newLayouts.map(l => ({ ...l }));
+
+          // Directly manipulate DOM for smooth visual feedback during resize
+          // This bypasses React state updates which can be slow and conflict with react-grid-layout
+
+          // Move all widgets that have changed position (not just movedWidgets)
+          for (const layout of result.newLayouts) {
+            if (layout.i === newItem.i) continue; // Handle resizing widget separately
+            const baseLayout = baseLayouts.find(l => l.i === layout.i);
+            if (baseLayout && (layout.x !== baseLayout.x || layout.y !== baseLayout.y)) {
+              console.log('[DEBUG] Moving widget DOM:', layout.i, 'to', { x: layout.x, y: layout.y });
+              moveWidgetDom(layout.i, layout.x, layout.y);
+            }
+          }
+
+          // Also resize the resizing widget's DOM to fill the space created by pushing
+          if (resizingLayout) {
+            console.log('[DEBUG] Resizing widget DOM:', newItem.i, 'to', { w: resizingLayout.w, h: resizingLayout.h });
+            resizeWidgetDom(newItem.i, resizingLayout.w, resizingLayout.h);
+          }
+        }
       } else {
         setResizePreview(null);
       }
@@ -598,7 +1353,10 @@ export const DashboardLayout: React.FC = () => {
       // Feature 7: Shrinking - no preview needed, empty space will be preserved
       setResizePreview(null);
     }
-  }, [layouts, maxRows, getWidgetMinSizes]);
+    } catch (error) {
+      console.error('[DEBUG] handleResize error:', error);
+    }
+  }, [maxRows, getWidgetMinSizes, moveWidgetDom, resizeWidgetDom]);
 
   // Feature 4: Track mouse position during drag for swap detection
   useEffect(() => {
@@ -861,7 +1619,10 @@ export const DashboardLayout: React.FC = () => {
             onLayoutChange={handleLayoutChange}
             onDrop={handleDrop}
             onResizeStart={handleResizeStart}
-            onResize={handleResize}
+            onResize={(layout: GridItemLayout[], oldItem: GridItemLayout, newItem: GridItemLayout, placeholder: GridItemLayout, e: MouseEvent, element: HTMLElement) => {
+              console.log('[DEBUG] RGL onResize fired:', { oldW: oldItem.w, newW: newItem.w });
+              handleResize(layout, oldItem, newItem, placeholder, e, element);
+            }}
             onResizeStop={handleResizeStop}
             onDragStart={handleDragStart}
             onDragStop={handleDragStop}
@@ -871,7 +1632,7 @@ export const DashboardLayout: React.FC = () => {
             resizeHandles={['se', 'e', 's', 'n', 'w', 'ne', 'nw', 'sw']}
             useCSSTransforms={true}
             compactType={null}
-            preventCollision={true}
+            preventCollision={false}
             maxRows={maxRows}
             isBounded={true}
             allowOverlap={false}

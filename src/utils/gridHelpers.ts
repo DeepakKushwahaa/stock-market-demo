@@ -388,6 +388,8 @@ export function calculatePush(
 /**
  * Calculate space management for widget resize
  * Supports resizing from all directions (top, bottom, left, right)
+ * When resizing from the right, dependent widgets will be pushed horizontally
+ * until they touch the viewport edge or another widget
  * @param layouts - Current layouts
  * @param resizingId - ID of the widget being resized
  * @param newX - New x position (may change when resizing from left)
@@ -412,8 +414,16 @@ export function calculateResizeSpace(
 ): ResizeSpaceResult {
   const resizingWidget = layouts.find(l => l.i === resizingId);
   if (!resizingWidget) {
+    console.log('[DEBUG] Resizing widget not found');
     return { canResize: false, newLayouts: layouts, movedWidgets: [], shrunkWidgets: [] };
   }
+
+  console.log('[DEBUG] calculateResizeSpace:', {
+    resizingId,
+    current: { x: resizingWidget.x, y: resizingWidget.y, w: resizingWidget.w, h: resizingWidget.h, maxW: resizingWidget.maxW },
+    new: { x: newX, y: newY, w: newW, h: newH },
+    allWidgets: layouts.map(l => ({ i: l.i, x: l.x, y: l.y, w: l.w, h: l.h })),
+  });
 
   const newBounds: GridZone = {
     x: newX,
@@ -427,15 +437,79 @@ export function calculateResizeSpace(
     return { canResize: false, newLayouts: layouts, movedWidgets: [], shrunkWidgets: [] };
   }
 
-  // Find widgets that would be affected
+  // Detect resize direction based on requested size vs current size
+  // Use > instead of >= to properly detect when we're requesting a larger size
+  const isResizingRight = newW > resizingWidget.w && newX === resizingWidget.x;
+  const isResizingLeft = newX < resizingWidget.x;
+  const isResizingDown = newH > resizingWidget.h && newY === resizingWidget.y;
+  const isResizingUp = newY < resizingWidget.y;
+
+  console.log('[DEBUG] Resize direction:', { isResizingRight, isResizingLeft, isResizingDown, isResizingUp });
+  console.log('[DEBUG] Resizing widget current pos:', { x: resizingWidget.x, y: resizingWidget.y, w: resizingWidget.w, h: resizingWidget.h, maxW: resizingWidget.maxW });
+  console.log('[DEBUG] Requested new pos:', { x: newX, y: newY, w: newW, h: newH });
+
+  // Find widgets that would be affected - check for overlap OR adjacency in resize direction
   const affectedWidgets = layouts.filter(l => {
     if (l.i === resizingId) return false;
     const widgetZone: GridZone = { x: l.x, y: l.y, w: l.w, h: l.h };
-    return zonesOverlap(widgetZone, newBounds);
+
+    // Check for direct overlap with the new bounds
+    const overlaps = zonesOverlap(widgetZone, newBounds);
+    if (overlaps) {
+      console.log('[DEBUG] Widget', l.i, 'overlaps with newBounds');
+      return true;
+    }
+
+    // For right resize: find widgets that are adjacent (touching the new right edge)
+    if (isResizingRight) {
+      const hasVerticalOverlap = !(l.y >= newY + newH || l.y + l.h <= newY);
+      // Widget is immediately adjacent (touching or would touch the new right edge)
+      const isAdjacent = l.x === newX + newW;
+      // Widget starts within the expansion zone
+      const isInExpansionPath = l.x >= resizingWidget.x + resizingWidget.w && l.x < newX + newW;
+
+      const isAffected = hasVerticalOverlap && (isAdjacent || isInExpansionPath);
+
+      console.log('[DEBUG] Right resize check for widget', l.i, ':', {
+        widgetX: l.x, newRightEdge: newX + newW, currentRightEdge: resizingWidget.x + resizingWidget.w,
+        hasVerticalOverlap, isAdjacent, isInExpansionPath, isAffected
+      });
+
+      if (isAffected) return true;
+    }
+
+    // For left resize: widget is to the left and has vertical overlap
+    if (isResizingLeft) {
+      const isToLeft = l.x + l.w <= resizingWidget.x;
+      const wouldBeBlocking = l.x + l.w > newX; // Widget ends after the new left edge
+      const hasVerticalOverlap = !(l.y >= newY + newH || l.y + l.h <= newY);
+      if (isToLeft && wouldBeBlocking && hasVerticalOverlap) return true;
+    }
+
+    // For down resize: widget is below and has horizontal overlap
+    if (isResizingDown) {
+      const hasHorizontalOverlap = !(l.x >= newX + newW || l.x + l.w <= newX);
+      const isAdjacent = l.y === newY + newH;
+      const isInExpansionPath = l.y >= resizingWidget.y + resizingWidget.h && l.y < newY + newH;
+      if (hasHorizontalOverlap && (isAdjacent || isInExpansionPath)) return true;
+    }
+
+    // For up resize: widget is above and has horizontal overlap
+    if (isResizingUp) {
+      const isAbove = l.y + l.h <= resizingWidget.y;
+      const wouldBeBlocking = l.y + l.h > newY;
+      const hasHorizontalOverlap = !(l.x >= newX + newW || l.x + l.w <= newX);
+      if (isAbove && wouldBeBlocking && hasHorizontalOverlap) return true;
+    }
+
+    return false;
   });
+
+  console.log('[DEBUG] Affected widgets:', affectedWidgets.map(w => w.i));
 
   if (affectedWidgets.length === 0) {
     // No conflicts, resize directly (including position change for top/left resize)
+    console.log('[DEBUG] No affected widgets, allowing direct resize');
     const newLayouts = layouts.map(l =>
       l.i === resizingId ? { ...l, x: newX, y: newY, w: newW, h: newH } : l
     );
@@ -445,9 +519,49 @@ export function calculateResizeSpace(
   let workingLayouts = layouts.map(l => ({ ...l }));
   const movedWidgets: string[] = [];
   const shrunkWidgets: string[] = [];
-  let stillAffected = [...affectedWidgets];
 
-  // Phase 1: Try to move affected widgets to empty spaces
+  // Phase 1: Try to push affected widgets horizontally (for right-side resize)
+  // or vertically (for bottom-side resize) in the direction of the resize
+  if (isResizingRight || isResizingLeft || isResizingDown || isResizingUp) {
+    const direction = isResizingRight ? 'right' : isResizingLeft ? 'left' : isResizingDown ? 'down' : 'up';
+    console.log('[DEBUG] Attempting push in direction:', direction);
+    console.log('[DEBUG] newBounds (desired resize):', newBounds);
+
+    const pushResult = tryPushWidgetsInDirection(
+      workingLayouts,
+      affectedWidgets,
+      resizingId,
+      newBounds, // Pass the actual desired resize bounds
+      cols,
+      maxRows,
+      direction
+    );
+
+    console.log('[DEBUG] Push result:', pushResult);
+
+    if (pushResult.success && pushResult.movedWidgets.length > 0) {
+      workingLayouts = pushResult.layouts;
+      movedWidgets.push(...pushResult.movedWidgets);
+
+      // Apply resize to the resizing widget
+      workingLayouts = workingLayouts.map(l =>
+        l.i === resizingId ? { ...l, x: newX, y: newY, w: newW, h: newH } : l
+      );
+
+      console.log('[DEBUG] Push successful, final layouts:', workingLayouts.map(l => ({ i: l.i, x: l.x, y: l.y, w: l.w })));
+      return { canResize: true, newLayouts: workingLayouts, movedWidgets, shrunkWidgets };
+    }
+
+    // For horizontal resize (right/left), if push fails (widget at viewport edge), reject the resize
+    // Don't fall back to moving widgets down or shrinking - just stop the resize
+    if (isResizingRight || isResizingLeft) {
+      console.log('[DEBUG] Horizontal push failed (viewport edge reached), rejecting resize');
+      return { canResize: false, newLayouts: layouts, movedWidgets: [], shrunkWidgets: [] };
+    }
+  }
+
+  // Phase 2: Try to move affected widgets to empty spaces (fallback) - only for vertical resize
+  let stillAffected = [...affectedWidgets];
   for (const widget of stillAffected) {
     const occupancy = createOccupancyGrid(
       workingLayouts.filter(l => l.i !== widget.i && l.i !== resizingId),
@@ -476,7 +590,7 @@ export function calculateResizeSpace(
     }
   }
 
-  // Phase 2: If still affected widgets remain, try shrinking (largest first)
+  // Phase 3: If still affected widgets remain, try shrinking (largest first)
   if (stillAffected.length > 0) {
     // Sort by size (largest first)
     stillAffected.sort((a, b) => (b.w * b.h) - (a.w * a.h));
@@ -549,6 +663,144 @@ export function calculateResizeSpace(
   );
 
   return { canResize: true, newLayouts: workingLayouts, movedWidgets, shrunkWidgets };
+}
+
+/**
+ * Try to push widgets in a specific direction (horizontally or vertically)
+ * Pushes widgets all the way to the viewport edge (not just to clear the resizing widget)
+ */
+function tryPushWidgetsInDirection(
+  layouts: GridItemLayout[],
+  affectedWidgets: GridItemLayout[],
+  resizingId: string,
+  newBounds: GridZone,
+  cols: number,
+  maxRows: number,
+  direction: 'right' | 'left' | 'down' | 'up'
+): { success: boolean; layouts: GridItemLayout[]; movedWidgets: string[] } {
+  console.log('[DEBUG] tryPushWidgetsInDirection called:', {
+    direction, newBounds, cols, maxRows,
+    affectedWidgets: affectedWidgets.map(w => ({ i: w.i, x: w.x, y: w.y, w: w.w, h: w.h })),
+  });
+
+  let workingLayouts = layouts.map(l => ({ ...l }));
+  const movedWidgets: string[] = [];
+  const processedWidgets = new Set<string>();
+
+  // Add resizing widget to processed so we don't try to push it
+  processedWidgets.add(resizingId);
+
+  // Queue of widgets to process (widgets that need to be pushed)
+  const widgetIdsToPush = affectedWidgets.map(w => w.i);
+  console.log('[DEBUG] widgetIdsToPush:', widgetIdsToPush);
+
+  while (widgetIdsToPush.length > 0) {
+    const widgetId = widgetIdsToPush.shift()!;
+    console.log('[DEBUG] Processing widget:', widgetId);
+
+    // Skip if already processed
+    if (processedWidgets.has(widgetId)) {
+      console.log('[DEBUG] Already processed, skipping');
+      continue;
+    }
+    processedWidgets.add(widgetId);
+
+    const currentWidget = workingLayouts.find(l => l.i === widgetId);
+    if (!currentWidget) {
+      console.log('[DEBUG] Widget not found in layouts');
+      continue;
+    }
+    console.log('[DEBUG] Current widget:', { x: currentWidget.x, y: currentWidget.y, w: currentWidget.w, h: currentWidget.h });
+
+    // Check if this widget needs to be pushed based on overlap with newBounds
+    let needsPush = false;
+
+    if (direction === 'right') {
+      const hasVerticalOverlap = !(currentWidget.y >= newBounds.y + newBounds.h || currentWidget.y + currentWidget.h <= newBounds.y);
+      const hasHorizontalOverlap = currentWidget.x < newBounds.x + newBounds.w && currentWidget.x + currentWidget.w > newBounds.x;
+      const isHorizontallyAdjacent = currentWidget.x === newBounds.x + newBounds.w;
+      needsPush = hasVerticalOverlap && (hasHorizontalOverlap || isHorizontallyAdjacent);
+    } else if (direction === 'left') {
+      const hasVerticalOverlap = !(currentWidget.y >= newBounds.y + newBounds.h || currentWidget.y + currentWidget.h <= newBounds.y);
+      const hasHorizontalOverlap = currentWidget.x < newBounds.x + newBounds.w && currentWidget.x + currentWidget.w > newBounds.x;
+      needsPush = hasVerticalOverlap && hasHorizontalOverlap;
+    } else if (direction === 'down') {
+      const hasHorizontalOverlap = !(currentWidget.x >= newBounds.x + newBounds.w || currentWidget.x + currentWidget.w <= newBounds.x);
+      const hasVerticalOverlap = currentWidget.y < newBounds.y + newBounds.h && currentWidget.y + currentWidget.h > newBounds.y;
+      needsPush = hasHorizontalOverlap && hasVerticalOverlap;
+    } else if (direction === 'up') {
+      const hasHorizontalOverlap = !(currentWidget.x >= newBounds.x + newBounds.w || currentWidget.x + currentWidget.w <= newBounds.x);
+      const hasVerticalOverlap = currentWidget.y < newBounds.y + newBounds.h && currentWidget.y + currentWidget.h > newBounds.y;
+      needsPush = hasHorizontalOverlap && hasVerticalOverlap;
+    }
+
+    console.log('[DEBUG] needsPush:', needsPush);
+
+    if (!needsPush) continue;
+
+    // Calculate new position - push only enough to clear the resizing widget's new bounds
+    // The widget should move to just after the resizing widget's new right edge
+    let newPos = { x: currentWidget.x, y: currentWidget.y };
+    if (direction === 'right') {
+      // Push just enough to clear the right edge of newBounds
+      // The target widget should be placed immediately after the resizing widget
+      newPos.x = newBounds.x + newBounds.w;
+    } else if (direction === 'left') {
+      // Push just enough to clear the left edge of newBounds
+      newPos.x = newBounds.x - currentWidget.w;
+    } else if (direction === 'down') {
+      // Push just enough to clear the bottom edge of newBounds
+      newPos.y = newBounds.y + newBounds.h;
+    } else if (direction === 'up') {
+      // Push just enough to clear the top edge of newBounds
+      newPos.y = newBounds.y - currentWidget.h;
+    }
+
+    console.log('[DEBUG] New position calculated:', newPos, 'current:', { x: currentWidget.x, y: currentWidget.y });
+
+    // Check if the new position is within bounds
+    if (newPos.x < 0 || newPos.y < 0 || newPos.x + currentWidget.w > cols || newPos.y + currentWidget.h > maxRows) {
+      console.log('[DEBUG] Push failed: widget would exceed boundary');
+      return { success: false, layouts, movedWidgets: [] };
+    }
+
+    // Check if the widget actually needs to move (new position is different from current)
+    if (newPos.x === currentWidget.x && newPos.y === currentWidget.y) {
+      console.log('[DEBUG] Widget already at target position, no move needed');
+      continue;
+    }
+
+    // Apply the push
+    console.log('[DEBUG] Applying push: moving widget', currentWidget.i, 'to', newPos);
+    workingLayouts = workingLayouts.map(l =>
+      l.i === currentWidget.i ? { ...l, x: newPos.x, y: newPos.y } : l
+    );
+    movedWidgets.push(currentWidget.i);
+
+    // Add this widget's new position as a zone for chain reactions
+    const newWidgetZone: GridZone = {
+      x: newPos.x,
+      y: newPos.y,
+      w: currentWidget.w,
+      h: currentWidget.h,
+    };
+
+    // Find any widgets that would be affected by this push (chain reaction)
+    const chainAffectedWidgets = workingLayouts.filter(l => {
+      if (processedWidgets.has(l.i)) return false;
+      if (widgetIdsToPush.includes(l.i)) return false;
+      const widgetZone: GridZone = { x: l.x, y: l.y, w: l.w, h: l.h };
+      return zonesOverlap(widgetZone, newWidgetZone);
+    });
+
+    // Add chain-affected widgets to the queue
+    for (const chainWidget of chainAffectedWidgets) {
+      widgetIdsToPush.push(chainWidget.i);
+    }
+  }
+
+  console.log('[DEBUG] tryPushWidgetsInDirection returning success, movedWidgets:', movedWidgets);
+  return { success: true, layouts: workingLayouts, movedWidgets };
 }
 
 /**
