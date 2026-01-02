@@ -1732,7 +1732,7 @@ export const DashboardLayout: React.FC = () => {
             resizeHandles={['se', 'e', 's', 'n', 'w', 'ne', 'nw', 'sw']}
             useCSSTransforms={true}
             compactType={null}
-            preventCollision={false}
+            preventCollision={true}
             maxRows={maxRows}
             isBounded={true}
             allowOverlap={false}
