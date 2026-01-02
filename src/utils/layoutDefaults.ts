@@ -3,7 +3,7 @@ import type { DashboardLayoutState, GridConfig, WidgetSizeConfig, GridItemLayout
 // Grid configuration constants
 export const GRID_CONFIG: GridConfig = {
   cols: 25,
-  rowHeight: 25,
+  rowHeight: 26,
   margin: [7, 7],
   containerPadding: [8, 8],
   maxWidgets: 10,

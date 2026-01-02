@@ -80,15 +80,18 @@ export const DashboardLayout: React.FC = () => {
   }, [layouts]);
 
   // Calculate max rows based on viewport height
-  // Grid height for n rows = padding*2 + (rowHeight * n) + (margin * (n-1))
-  const paddingY = GRID_CONFIG.containerPadding[1];
-  const rowHeight = GRID_CONFIG.rowHeight;
-  const marginY = GRID_CONFIG.margin[1];
-  // Calculate available space for rows
-  const availableForRows = containerHeight - (paddingY * 4) - marginY;
-  // Each row unit takes: rowHeight + marginY
-  // Use Math.ceil so widgets can resize to fill the entire viewport to the bottom
-  const maxRows = Math.max(1, Math.ceil(availableForRows / (rowHeight + marginY)));
+  // react-grid-layout total height = topPadding + (n * rowHeight) + ((n-1) * margin) + bottomPadding
+  // = 2*padding + n*rowHeight + (n-1)*margin
+  // = 2*padding - margin + n*(rowHeight + margin)
+  // Solving for n: n = (containerHeight - 2*padding + margin) / (rowHeight + margin)
+  const rowHeight = GRID_CONFIG.rowHeight; // 25px
+  const marginY = GRID_CONFIG.margin[1]; // 7px
+  const paddingY = GRID_CONFIG.containerPadding[1]; // 8px
+  const rowUnitHeight = rowHeight + marginY; // 32px per row
+  
+  // Proper calculation accounting for container padding
+  const availableForContent = containerHeight + marginY;
+  const maxRows = Math.max(1, Math.floor(availableForContent / rowUnitHeight));
 
   // Update maxRows in context when it changes
   useEffect(() => {
@@ -1851,6 +1854,12 @@ export const DashboardLayout: React.FC = () => {
 
   const previewStyle = getPreviewStyle();
 
+  // Calculate actual grid cell size for visual background
+  const cellWidth = containerWidth > 0 
+    ? (containerWidth - GRID_CONFIG.containerPadding[0] * 2 - GRID_CONFIG.margin[0] * (GRID_CONFIG.cols - 1)) / GRID_CONFIG.cols + GRID_CONFIG.margin[0]
+    : 32;
+  const cellHeight = GRID_CONFIG.rowHeight + GRID_CONFIG.margin[1];
+
   return (
     <div
       ref={containerRef}
@@ -1862,7 +1871,8 @@ export const DashboardLayout: React.FC = () => {
           linear-gradient(to right, #f1f1f1 1px, transparent 1px),
           linear-gradient(to bottom, #f1f1f1 1px, transparent 1px)
         `,
-        backgroundSize: '25px 25px',
+        backgroundSize: `${cellWidth}px ${cellHeight}px`,
+        backgroundPosition: `${GRID_CONFIG.containerPadding[0]}px ${GRID_CONFIG.containerPadding[1]}px`,
       }}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
