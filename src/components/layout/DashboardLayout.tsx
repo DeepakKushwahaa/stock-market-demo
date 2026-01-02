@@ -252,7 +252,26 @@ export const DashboardLayout: React.FC = () => {
     return maxDimensions;
   }, [maxRows]);
 
+  // Track when resize was applied to ignore subsequent layout changes from react-grid-layout
+  const lastResizeApplyTimeRef = useRef<number>(0);
+
   const handleLayoutChange = useCallback((newLayout: GridItemLayout[]) => {
+    // IMPORTANT: Skip layout change processing if we're in the middle of a resize
+    // Our custom resize logic handles the layout changes directly
+    // react-grid-layout's built-in collision detection can conflict with our push logic
+    if (isResizingRef.current) {
+      return;
+    }
+
+    // Also skip if we just applied a resize preview (within last 200ms)
+    // React-grid-layout fires onLayoutChange after our state update with its own calculated layout
+    // which may have collision detection that moves widgets - we want to ignore this
+    const timeSinceResizeApply = Date.now() - lastResizeApplyTimeRef.current;
+    if (timeSinceResizeApply < 200) {
+      console.log('[DEBUG] Skipping handleLayoutChange - too soon after resize apply');
+      return;
+    }
+
     // Try to adjust layout to fit within viewport
     const adjustedLayout = adjustLayoutForViewport(newLayout);
 
@@ -441,7 +460,7 @@ export const DashboardLayout: React.FC = () => {
   const maxGridDeltaXRef = useRef<number>(0);
 
   // Handle resize start - store the current valid layout and build DOM element map
-  const handleResizeStart = useCallback((_layout: GridItemLayout[], oldItem: GridItemLayout, _newItem: GridItemLayout, _placeholder: GridItemLayout, e: MouseEvent, _element: HTMLElement) => {
+  const handleResizeStart = useCallback((currentLayout: GridItemLayout[], oldItem: GridItemLayout, _newItem: GridItemLayout, _placeholder: GridItemLayout, e: MouseEvent, _element: HTMLElement) => {
     isResizingRef.current = true;
     resizingWidgetIdRef.current = oldItem.i;
     resizeStartMouseXRef.current = e.clientX;
@@ -464,8 +483,11 @@ export const DashboardLayout: React.FC = () => {
     resizeLogger.startSession(oldItem.i, resizeDirectionRef.current);
 
     // Store the original layout at resize start - this is used for calculating push operations
-    resizeStartLayoutRef.current = layouts.map(l => ({ ...l }));
-    lastValidLayoutRef.current = layouts.map(l => ({ ...l }));
+    // Use currentLayout from react-grid-layout (passed as first param) to ensure we have the latest state
+    // Also use lastValidLayoutRef as a fallback if currentLayout doesn't have our widgets
+    const baseLayout = currentLayout.length > 0 ? currentLayout : layouts;
+    resizeStartLayoutRef.current = baseLayout.map(l => ({ ...l }));
+    lastValidLayoutRef.current = baseLayout.map(l => ({ ...l }));
     lastPushedLayoutRef.current = null; // Reset for new resize operation
     maxGridDeltaXRef.current = 0; // Reset max expansion tracker
     setResizePreview(null);
@@ -478,7 +500,8 @@ export const DashboardLayout: React.FC = () => {
       widgetDomMapRef.current.clear();
 
       // Match each layout position to its DOM element
-      for (const layout of layouts) {
+      // Use baseLayout which has the correct current positions
+      for (const layout of baseLayout) {
         const expectedPixelX = GRID_CONFIG.containerPadding[0] + layout.x * (colWidth + GRID_CONFIG.margin[0]);
         const expectedPixelY = GRID_CONFIG.containerPadding[1] + layout.y * (GRID_CONFIG.rowHeight + GRID_CONFIG.margin[1]);
 
@@ -504,7 +527,6 @@ export const DashboardLayout: React.FC = () => {
 
   // Handle resize stop - apply space management or validate layout
   const handleResizeStop = useCallback((newLayout: GridItemLayout[], oldItem: GridItemLayout, newItem: GridItemLayout, _placeholder: GridItemLayout, _e: MouseEvent, _element: HTMLElement) => {
-    isResizingRef.current = false;
     const cols = GRID_CONFIG.cols;
 
     resizeLogger.log('RESIZE STOP', {
@@ -515,9 +537,26 @@ export const DashboardLayout: React.FC = () => {
     // Feature 6: Apply resize space management if preview is active
     if (resizePreview && resizePreview.newLayouts.length > 0) {
       resizeLogger.log('APPLYING PREVIEW', {
-        layouts: resizePreview.newLayouts.map(l => `${l.i.slice(-8)}: x=${l.x}, w=${l.w}`)
+        layouts: resizePreview.newLayouts.map(l => `${l.i.slice(-8)}: x=${l.x}, y=${l.y}, w=${l.w}, h=${l.h}`)
       });
       resizeLogger.endSession();
+
+      // Final validation: ensure no widget is outside viewport before applying
+      const hasInvalidPosition = resizePreview.newLayouts.some(layout =>
+        layout.x < 0 ||
+        layout.x + layout.w > cols ||
+        layout.y < 0 ||
+        layout.y + layout.h > maxRows
+      );
+
+      if (hasInvalidPosition) {
+        console.log('[DEBUG] handleResizeStop: Invalid layout in preview, reverting to last valid');
+        updateLayouts(lastValidLayoutRef.current);
+        setResizePreview(null);
+        isResizingRef.current = false;
+        return;
+      }
+
       const maxDimensions = calculateMaxDimensions(resizePreview.newLayouts);
       const validLayout = resizePreview.newLayouts.map(item => {
         const widget = widgets.find(w => w.i === item.i);
@@ -532,10 +571,17 @@ export const DashboardLayout: React.FC = () => {
         };
       });
       lastValidLayoutRef.current = validLayout;
+      // Mark the time we applied resize to ignore subsequent layout changes from react-grid-layout
+      lastResizeApplyTimeRef.current = Date.now();
       updateLayouts(validLayout);
       setResizePreview(null);
+      // Reset isResizing AFTER layout update to prevent handleLayoutChange from interfering
+      isResizingRef.current = false;
       return;
     }
+
+    // Reset isResizing flag
+    isResizingRef.current = false;
 
     setResizePreview(null);
 
@@ -786,299 +832,201 @@ export const DashboardLayout: React.FC = () => {
           return;
         }
 
-        // Expanding - need to check for push
-        const newRightEdge = resizingLayout.x + requestedW;
-        const newLeftEdge = isWestResize ? resizingLayout.x - effectiveDeltaX : resizingLayout.x;
+        // Expanding - need to push widgets until they hit viewport edge (CHAIN PUSHING)
         const originalRightEdge = resizingLayout.x + resizingLayout.w;
         const originalLeftEdge = resizingLayout.x;
 
-        // Collect ALL widgets that are to the right/left of the resizing widget
-        // Push all widgets regardless of vertical overlap - they all need to move together
-        // until they reach the viewport edge
-        const widgetsToPush: Array<{ id: string; origX: number; w: number; minW: number; y: number; h: number }> = [];
+        // Helper function to check if two widgets have vertical overlap
+        const hasVerticalOverlapBetween = (w1: { y: number; h: number }, w2: { y: number; h: number }) => {
+          const w1Top = w1.y;
+          const w1Bottom = w1.y + w1.h;
+          const w2Top = w2.y;
+          const w2Bottom = w2.y + w2.h;
+          return !(w1Bottom <= w2Top || w1Top >= w2Bottom);
+        };
 
-        for (const l of baseLayouts) {
-          if (l.i === resizingWidgetIdRef.current) continue;
+        // Helper function to check vertical overlap with resizing widget
+        const hasVerticalOverlap = (widget: { y: number; h: number }) => {
+          return hasVerticalOverlapBetween(resizingLayout, widget);
+        };
 
-          // Push ALL widgets whose left edge is at or after our right edge (for east resize)
-          // or whose right edge is at or before our left edge (for west resize)
-          // This includes widgets that are not directly adjacent but still to the right/left
-          if (isEastResize && l.x >= originalRightEdge) {
-            // Widget starts at or after our right edge - may need pushing
-            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
-          } else if (isWestResize && l.x + l.w <= originalLeftEdge) {
-            // Widget ends at or before our left edge - may need pushing
-            widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
+        // CHAIN PUSH: Find ALL widgets that form a chain from resizing widget to viewport
+        // A chain is formed when widgets block each other horizontally AND have vertical overlap
+        const allWidgets = baseLayouts
+          .filter(l => l.i !== resizingWidgetIdRef.current)
+          .map(l => ({ id: l.i, x: l.x, w: l.w, y: l.y, h: l.h }));
+
+        // Build the chain of widgets that need to be pushed
+        const widgetsToPush: Array<{ id: string; x: number; w: number; y: number; h: number }> = [];
+        const processed = new Set<string>();
+
+        // Start with widgets directly ADJACENT to the resizing widget (touching, no gap)
+        const directlyBlocked = allWidgets.filter(w => {
+          if (!hasVerticalOverlap(w)) return false;
+          if (isEastResize) {
+            // Widget must START exactly at resizing widget's right edge (no gap)
+            return w.x === originalRightEdge;
           }
-        }
-
-        // Also collect widgets that are further right (not directly adjacent)
-        // These need to be pushed when closer widgets are pushed
-        if (isEastResize) {
-          for (const l of baseLayouts) {
-            if (l.i === resizingWidgetIdRef.current) continue;
-            // If widget is not already in the list and its left edge is after our current right edge
-            const alreadyIncluded = widgetsToPush.some(w => w.id === l.i);
-            if (!alreadyIncluded && l.x > resizingLayout.x) {
-              // Widget is somewhere to our right - include it for chain pushing
-              widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
-            }
-          }
-        } else if (isWestResize) {
-          for (const l of baseLayouts) {
-            if (l.i === resizingWidgetIdRef.current) continue;
-            const alreadyIncluded = widgetsToPush.some(w => w.id === l.i);
-            if (!alreadyIncluded && l.x + l.w < resizingLayout.x + resizingLayout.w) {
-              // Widget is somewhere to our left - include it for chain pushing
-              widgetsToPush.push({ id: l.i, origX: l.x, w: l.w, minW: l.minW ?? 3, y: l.y, h: l.h });
-            }
-          }
-        }
-
-        resizeLogger.log('WIDGET COLLECTION', {
-          resizingWidget: `x=${resizingLayout.x}, y=${resizingLayout.y}, w=${resizingLayout.w}, h=${resizingLayout.h}`,
-          widgetsToRight: widgetsToPush.length,
-          widgets: widgetsToPush.map(w => `${w.id.slice(-8)}: x=${w.origX}, y=${w.y}, w=${w.w}, h=${w.h}`)
+          // West resize - widget must END exactly at resizing widget's left edge
+          return w.x + w.w === originalLeftEdge;
         });
 
-        // Group widgets by their X position - widgets at the same X are vertically stacked
-        // For push calculation, we only care about the widest widget at each X position
-        // But all widgets at that X need to move together
-        const widgetsByX = new Map<number, typeof widgetsToPush>();
-        for (const w of widgetsToPush) {
-          const existing = widgetsByX.get(w.origX) || [];
-          existing.push(w);
-          widgetsByX.set(w.origX, existing);
-        }
+        // BFS to find all widgets in the chain
+        // IMPORTANT: Only add widgets that are ADJACENT (touching) to the chain
+        const queue = [...directlyBlocked];
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (processed.has(current.id)) continue;
+          processed.add(current.id);
+          widgetsToPush.push(current);
 
-        // Get unique X positions and the max width at each position
-        const uniquePositions = Array.from(widgetsByX.entries())
-          .map(([x, widgets]) => ({
-            x,
-            maxW: Math.max(...widgets.map(w => w.w)),
-            widgets
-          }))
-          .sort((a, b) => isEastResize ? a.x - b.x : b.x - a.x);
+          // Find widgets that this widget would push (must be ADJACENT - touching or overlapping)
+          for (const other of allWidgets) {
+            if (processed.has(other.id)) continue;
+            if (!hasVerticalOverlapBetween(current, other)) continue;
 
-        // Log widget positions
-        resizeLogger.logWidgetPositions('Resizing Widget', [{
-          id: resizingWidgetIdRef.current,
-          x: resizingLayout.x,
-          w: resizingLayout.w
-        }]);
-        resizeLogger.logWidgetPositions('Widgets to Push (grouped by X)',
-          uniquePositions.map(p => ({ id: `group@${p.x}`, x: p.x, w: p.maxW, rightEdge: p.x + p.maxW }))
-        );
-
-        // Calculate push positions - push ALL widgets to the right uniformly
-        const newPositions: Map<string, number> = new Map();
-        let canPush = true;
-
-        if (isEastResize) {
-          // Calculate how much we're expanding
-          const expandAmount = newRightEdge - originalRightEdge;
-
-          if (expandAmount > 0) {
-            if (widgetsToPush.length > 0) {
-              // Find the rightmost edge of all widgets to push
-              let rightmostEdge = 0;
-              for (const w of widgetsToPush) {
-                rightmostEdge = Math.max(rightmostEdge, w.origX + w.w);
-              }
-
-              // Calculate max expand allowed (so rightmost widget stays in viewport)
-              const maxExpandAllowed = GRID_CONFIG.cols - rightmostEdge;
-              const actualExpandAmount = Math.min(expandAmount, maxExpandAllowed);
-
-              resizeLogger.log('EAST RESIZE CALCULATION', {
-                requestedExpand: expandAmount,
-                rightmostEdge,
-                maxExpandAllowed,
-                actualExpandAmount,
-                viewportCols: GRID_CONFIG.cols
-              });
-
-              if (actualExpandAmount <= 0) {
-                // Can't expand at all - widgets are already at viewport edge
-                canPush = false;
-              } else if (actualExpandAmount < expandAmount) {
-                // Partial expand - limit the resize
-                canPush = false; // Will trigger recalculation with limited width
-                // Push all widgets by the max allowed amount
-                for (const w of widgetsToPush) {
-                  newPositions.set(w.id, w.origX + actualExpandAmount);
-                }
-              } else {
-                // Full expand allowed - push all widgets
-                for (const w of widgetsToPush) {
-                  newPositions.set(w.id, w.origX + expandAmount);
-                }
+            if (isEastResize) {
+              // Other widget must be ADJACENT to current's right edge (touching or within 1 column)
+              // This means other.x should equal current.x + current.w (no gap)
+              const currentRightEdge = current.x + current.w;
+              if (other.x === currentRightEdge) {
+                queue.push(other);
               }
             } else {
-              // No widgets to push - check if resizing widget itself would exceed viewport
-              if (newRightEdge > GRID_CONFIG.cols) {
-                canPush = false;
-                resizeLogger.log('EAST RESIZE BLOCKED - NO WIDGETS TO PUSH', {
-                  newRightEdge,
-                  viewportCols: GRID_CONFIG.cols,
-                  reason: 'Widget would exceed viewport with no widgets to push'
-                });
+              // Other widget must be ADJACENT to current's left edge
+              const currentLeftEdge = current.x;
+              if (other.x + other.w === currentLeftEdge) {
+                queue.push(other);
               }
             }
+          }
+        }
+
+        // Sort widgets by X position (left to right for east, right to left for west)
+        widgetsToPush.sort((a, b) => isEastResize ? a.x - b.x : b.x - a.x);
+
+        // Find widgets NOT in the chain that could block the push
+        const chainIds = new Set(widgetsToPush.map(w => w.id));
+        const nonChainWidgets = allWidgets.filter(w => !chainIds.has(w.id));
+
+        // Calculate available space considering:
+        // 1. Viewport edge
+        // 2. Non-chain widgets that could block (have vertical overlap with chain widgets)
+        let availableSpace: number;
+
+        if (isEastResize) {
+          if (widgetsToPush.length > 0) {
+            // Find the rightmost edge of all widgets in the chain
+            const rightmostEdge = Math.max(...widgetsToPush.map(w => w.x + w.w));
+
+            // Check if any non-chain widget would block the push
+            // A non-chain widget blocks if it has vertical overlap with ANY chain widget
+            // and is to the right of the chain
+            let blockingEdge = GRID_CONFIG.cols; // Default to viewport edge
+
+            for (const nonChain of nonChainWidgets) {
+              // Check if this non-chain widget has vertical overlap with any chain widget
+              const hasOverlapWithChain = widgetsToPush.some(chainWidget =>
+                hasVerticalOverlapBetween(chainWidget, nonChain)
+              );
+
+              if (hasOverlapWithChain && nonChain.x >= rightmostEdge) {
+                // This widget could block - find the closest one
+                blockingEdge = Math.min(blockingEdge, nonChain.x);
+              }
+            }
+
+            availableSpace = blockingEdge - rightmostEdge;
+          } else {
+            // No widgets to push - check for blockers from original right edge
+            let blockingEdge = GRID_CONFIG.cols;
+
+            for (const nonChain of nonChainWidgets) {
+              if (hasVerticalOverlap(nonChain) && nonChain.x >= originalRightEdge) {
+                blockingEdge = Math.min(blockingEdge, nonChain.x);
+              }
+            }
+
+            availableSpace = blockingEdge - originalRightEdge;
           }
         } else {
-          // West resize - calculate expand amount and push all widgets to the left
-          const expandAmount = originalLeftEdge - newLeftEdge;
+          // West resize
+          if (widgetsToPush.length > 0) {
+            // Find the leftmost edge of all widgets in the chain
+            const leftmostEdge = Math.min(...widgetsToPush.map(w => w.x));
 
-          if (expandAmount > 0) {
-            if (widgetsToPush.length > 0) {
-              // Find the leftmost edge of all widgets to push
-              let leftmostEdge = GRID_CONFIG.cols;
-              for (const w of widgetsToPush) {
-                leftmostEdge = Math.min(leftmostEdge, w.origX);
-              }
+            // Check for blocking non-chain widgets to the left
+            let blockingEdge = 0; // Default to viewport edge
 
-              // Calculate max expand allowed (so leftmost widget stays in viewport)
-              const maxExpandAllowed = leftmostEdge;
-              const actualExpandAmount = Math.min(expandAmount, maxExpandAllowed);
+            for (const nonChain of nonChainWidgets) {
+              const hasOverlapWithChain = widgetsToPush.some(chainWidget =>
+                hasVerticalOverlapBetween(chainWidget, nonChain)
+              );
 
-              resizeLogger.log('WEST RESIZE CALCULATION', {
-                requestedExpand: expandAmount,
-                leftmostEdge,
-                maxExpandAllowed,
-                actualExpandAmount
-              });
-
-              if (actualExpandAmount <= 0) {
-                // Can't expand at all - widgets are already at viewport edge
-                canPush = false;
-              } else if (actualExpandAmount < expandAmount) {
-                // Partial expand - limit the resize
-                canPush = false; // Will trigger recalculation with limited width
-                // Push all widgets by the max allowed amount
-                for (const w of widgetsToPush) {
-                  newPositions.set(w.id, w.origX - actualExpandAmount);
-                }
-              } else {
-                // Full expand allowed - push all widgets to the left
-                for (const w of widgetsToPush) {
-                  newPositions.set(w.id, w.origX - expandAmount);
-                }
-              }
-            } else {
-              // No widgets to push - check if resizing widget itself would go negative
-              if (newLeftEdge < 0) {
-                canPush = false;
-                resizeLogger.log('WEST RESIZE BLOCKED - NO WIDGETS TO PUSH', {
-                  newLeftEdge,
-                  reason: 'Widget would go negative with no widgets to push'
-                });
+              if (hasOverlapWithChain && nonChain.x + nonChain.w <= leftmostEdge) {
+                // This widget could block - find the closest one (rightmost edge)
+                blockingEdge = Math.max(blockingEdge, nonChain.x + nonChain.w);
               }
             }
+
+            availableSpace = leftmostEdge - blockingEdge;
+          } else {
+            // No widgets to push - check for blockers from original left edge
+            let blockingEdge = 0;
+
+            for (const nonChain of nonChainWidgets) {
+              if (hasVerticalOverlap(nonChain) && nonChain.x + nonChain.w <= originalLeftEdge) {
+                blockingEdge = Math.max(blockingEdge, nonChain.x + nonChain.w);
+              }
+            }
+
+            availableSpace = originalLeftEdge - blockingEdge;
           }
         }
 
-        // If can't push, calculate max allowed width
-        let finalW = requestedW;
-        let finalX = isWestResize ? newLeftEdge : resizingLayout.x;
-        let maxAllowedWidth = requestedW;
+        // Calculate max allowed width
+        const maxAllowedWidth = resizingLayout.w + availableSpace;
 
-        resizeLogger.logPushCalculation({
-          resizingWidget: { x: resizingLayout.x, w: resizingLayout.w, newRightEdge },
-          widgetsToPush: widgetsToPush.map(w => ({ id: w.id, x: w.origX, w: w.w })),
-          canPush,
-          newPositions: Array.from(newPositions.entries()),
-          cols: GRID_CONFIG.cols
-        });
+        // Calculate final width (limited by available space)
+        const finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
+        const finalX = isWestResize
+          ? resizingLayout.x + resizingLayout.w - finalW
+          : resizingLayout.x;
 
-        if (!canPush) {
+        // Calculate expansion amount
+        const expansion = finalW - resizingLayout.w;
+
+        // Calculate new positions for pushed widgets
+        const newPositions: Map<string, number> = new Map();
+
+        if (expansion > 0) {
           if (isEastResize) {
-            if (widgetsToPush.length > 0) {
-              // Find rightmost edge of all widgets to push
-              let rightmostEdge = 0;
-              for (const w of widgetsToPush) {
-                rightmostEdge = Math.max(rightmostEdge, w.origX + w.w);
-              }
-              // Max expand = viewport - rightmost edge
-              const maxExpand = GRID_CONFIG.cols - rightmostEdge;
-              maxAllowedWidth = resizingLayout.w + maxExpand;
-              finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
-
-              resizeLogger.log('LIMIT CALCULATION (East) - WITH WIDGETS', {
-                viewportCols: GRID_CONFIG.cols,
-                rightmostEdge,
-                maxExpand,
-                maxAllowedWidth,
-                requestedW,
-                finalW
-              });
-
-              // Recalculate push positions with limited width
-              const limitedExpandAmount = finalW - resizingLayout.w;
-              newPositions.clear();
-              for (const w of widgetsToPush) {
-                newPositions.set(w.id, w.origX + limitedExpandAmount);
-              }
-            } else {
-              // No widgets to push - limit to viewport edge
-              maxAllowedWidth = GRID_CONFIG.cols - resizingLayout.x;
-              finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
-
-              resizeLogger.log('LIMIT CALCULATION (East) - NO WIDGETS', {
-                viewportCols: GRID_CONFIG.cols,
-                resizingX: resizingLayout.x,
-                maxAllowedWidth,
-                requestedW,
-                finalW
-              });
+            for (const w of widgetsToPush) {
+              const newX = w.x + expansion;
+              // Clamp to viewport edge
+              const clampedX = Math.min(newX, GRID_CONFIG.cols - w.w);
+              newPositions.set(w.id, clampedX);
             }
           } else {
-            if (widgetsToPush.length > 0) {
-              // Find leftmost edge of all widgets to push
-              let leftmostEdge = GRID_CONFIG.cols;
-              for (const w of widgetsToPush) {
-                leftmostEdge = Math.min(leftmostEdge, w.origX);
-              }
-              // Max expand = leftmost edge (how far we can push to left before hitting 0)
-              const maxExpand = leftmostEdge;
-              maxAllowedWidth = resizingLayout.w + maxExpand;
-              finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
-              finalX = resizingLayout.x + resizingLayout.w - finalW;
-
-              resizeLogger.log('LIMIT CALCULATION (West) - WITH WIDGETS', {
-                leftmostEdge,
-                maxExpand,
-                maxAllowedWidth,
-                finalW,
-                finalX
-              });
-
-              // Recalculate push positions with limited width
-              const limitedExpandAmount = finalW - resizingLayout.w;
-              newPositions.clear();
-              for (const w of widgetsToPush) {
-                newPositions.set(w.id, w.origX - limitedExpandAmount);
-              }
-            } else {
-              // No widgets to push - limit to viewport edge (x=0)
-              maxAllowedWidth = resizingLayout.x + resizingLayout.w;
-              finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
-              finalX = resizingLayout.x + resizingLayout.w - finalW;
-
-              resizeLogger.log('LIMIT CALCULATION (West) - NO WIDGETS', {
-                maxAllowedWidth,
-                requestedW,
-                finalW,
-                finalX
-              });
+            for (const w of widgetsToPush) {
+              const newX = w.x - expansion;
+              // Clamp to viewport edge (x=0)
+              const clampedX = Math.max(0, newX);
+              newPositions.set(w.id, clampedX);
             }
           }
-
-          resizeLogger.log('RECALCULATED POSITIONS', {
-            finalW,
-            newPositions: Array.from(newPositions.entries()).map(([id, x]) => `${id.slice(-8)}→${x}`)
-          });
         }
+
+        console.log('=== HORIZONTAL RESIZE DEBUG (CHAIN PUSH MODE) ===');
+        console.log('Resizing widget:', resizingLayout.i.slice(-8), `x=${resizingLayout.x}, y=${resizingLayout.y}, w=${resizingLayout.w}, h=${resizingLayout.h}`);
+        console.log('RequestedW:', requestedW, 'FinalW:', finalW, 'MaxAllowedWidth:', maxAllowedWidth, 'AvailableSpace:', availableSpace);
+        console.log('Expansion:', expansion);
+        console.log('Widgets in chain:', widgetsToPush.length);
+        widgetsToPush.forEach(w => {
+          const newX = newPositions.get(w.id);
+          console.log(`  - ${w.id.slice(-8)}: x=${w.x} -> ${newX}, y=${w.y}, w=${w.w}, h=${w.h}`);
+        });
+        console.log('=== END DEBUG ===');
 
         // Apply DOM updates
         resizeWidgetDom(resizingWidgetIdRef.current, finalW, resizingLayout.h);
@@ -1088,25 +1036,44 @@ export const DashboardLayout: React.FC = () => {
 
         // Move pushed widgets
         const movedWidgetIds: string[] = [];
-        for (const widget of widgetsToPush) {
-          const newX = newPositions.get(widget.id);
-          if (newX !== undefined && newX !== widget.origX) {
-            moveWidgetDom(widget.id, newX, widget.y);
-            movedWidgetIds.push(widget.id);
+        for (const w of widgetsToPush) {
+          const newX = newPositions.get(w.id);
+          if (newX !== undefined && newX !== w.x) {
+            // IMPORTANT: Preserve original Y position
+            moveWidgetDom(w.id, newX, w.y);
+            movedWidgetIds.push(w.id);
           }
         }
 
-        // Update preview
+        // Update preview - preserve Y position for ALL widgets
         const newLayouts = baseLayouts.map(l => {
           if (l.i === resizingWidgetIdRef.current) {
-            return { ...l, x: finalX, w: finalW };
+            return { ...l, x: finalX, w: finalW, y: resizingLayout.y, h: resizingLayout.h };
           }
           const newX = newPositions.get(l.i);
           if (newX !== undefined) {
-            return { ...l, x: newX };
+            return { ...l, x: newX, y: l.y, h: l.h }; // Preserve Y and H
           }
-          return l;
+          return { ...l };
         });
+
+        // Validate: ensure no widget goes outside viewport
+        const hasInvalidPosition = newLayouts.some(layout =>
+          layout.x < 0 ||
+          layout.x + layout.w > GRID_CONFIG.cols ||
+          layout.y < 0 ||
+          layout.y + layout.h > maxRows
+        );
+
+        if (hasInvalidPosition) {
+          console.log('[DEBUG] Invalid layout - reverting');
+          for (const l of baseLayouts) {
+            if (l.i !== resizingWidgetIdRef.current) {
+              moveWidgetDom(l.i, l.x, l.y);
+            }
+          }
+          return;
+        }
 
         setResizePreview({ newLayouts, movedWidgets: movedWidgetIds, shrunkWidgets: [] });
         lastPushedLayoutRef.current = newLayouts;

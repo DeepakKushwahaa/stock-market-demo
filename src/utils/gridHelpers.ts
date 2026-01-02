@@ -410,7 +410,7 @@ export function calculateResizeSpace(
   newH: number,
   cols: number,
   maxRows: number,
-  widgetMinSizes: WidgetMinSizes
+  _widgetMinSizes: WidgetMinSizes
 ): ResizeSpaceResult {
   const resizingWidget = layouts.find(l => l.i === resizingId);
   if (!resizingWidget) {
@@ -558,103 +558,19 @@ export function calculateResizeSpace(
       console.log('[DEBUG] Horizontal push failed (viewport edge reached), rejecting resize');
       return { canResize: false, newLayouts: layouts, movedWidgets: [], shrunkWidgets: [] };
     }
-  }
 
-  // Phase 2: Try to move affected widgets to empty spaces (fallback) - only for vertical resize
-  let stillAffected = [...affectedWidgets];
-  for (const widget of stillAffected) {
-    const occupancy = createOccupancyGrid(
-      workingLayouts.filter(l => l.i !== widget.i && l.i !== resizingId),
-      cols,
-      maxRows
-    );
-
-    // Mark new bounds of resizing widget as occupied
-    for (let r = newBounds.y; r < Math.min(newBounds.y + newBounds.h, maxRows); r++) {
-      for (let c = newBounds.x; c < Math.min(newBounds.x + newBounds.w, cols); c++) {
-        if (occupancy.grid[r]) {
-          occupancy.grid[r][c] = true;
-        }
-      }
-    }
-
-    // Find empty space for this widget
-    const emptySpot = findFirstFitPosition(occupancy, widget.w, widget.h);
-
-    if (emptySpot) {
-      workingLayouts = workingLayouts.map(l =>
-        l.i === widget.i ? { ...l, x: emptySpot.x, y: emptySpot.y } : l
-      );
-      movedWidgets.push(widget.i);
-      stillAffected = stillAffected.filter(w => w.i !== widget.i);
+    // For vertical resize (down/up), if push fails, also reject - don't move widgets to random positions
+    if (isResizingDown || isResizingUp) {
+      console.log('[DEBUG] Vertical push failed (viewport edge reached), rejecting resize');
+      return { canResize: false, newLayouts: layouts, movedWidgets: [], shrunkWidgets: [] };
     }
   }
 
-  // Phase 3: If still affected widgets remain, try shrinking (largest first)
-  if (stillAffected.length > 0) {
-    // Sort by size (largest first)
-    stillAffected.sort((a, b) => (b.w * b.h) - (a.w * a.h));
-
-    for (const widget of stillAffected) {
-      const minSizes = widgetMinSizes[widget.i] || { minW: 2, minH: 2 };
-      const currentWidget = workingLayouts.find(l => l.i === widget.i);
-      if (!currentWidget) continue;
-
-      // Calculate overlap amounts
-      const overlapRight = Math.max(0, (newBounds.x + newBounds.w) - currentWidget.x);
-      const overlapBottom = Math.max(0, (newBounds.y + newBounds.h) - currentWidget.y);
-      const overlapLeft = Math.max(0, (currentWidget.x + currentWidget.w) - newBounds.x);
-      const overlapTop = Math.max(0, (currentWidget.y + currentWidget.h) - newBounds.y);
-
-      let shrinkSuccess = false;
-
-      // Try shrinking from the side closest to the resizing widget
-      // Shrink from left (move widget right and reduce width)
-      if (overlapRight > 0 && currentWidget.w - overlapRight >= minSizes.minW) {
-        workingLayouts = workingLayouts.map(l =>
-          l.i === widget.i
-            ? { ...l, x: l.x + overlapRight, w: l.w - overlapRight }
-            : l
-        );
-        shrunkWidgets.push(widget.i);
-        shrinkSuccess = true;
-      }
-      // Shrink from top (move widget down and reduce height)
-      else if (overlapBottom > 0 && currentWidget.h - overlapBottom >= minSizes.minH) {
-        workingLayouts = workingLayouts.map(l =>
-          l.i === widget.i
-            ? { ...l, y: l.y + overlapBottom, h: l.h - overlapBottom }
-            : l
-        );
-        if (!shrinkSuccess) shrunkWidgets.push(widget.i);
-        shrinkSuccess = true;
-      }
-      // Shrink from right (just reduce width)
-      else if (overlapLeft > 0 && currentWidget.w - overlapLeft >= minSizes.minW) {
-        workingLayouts = workingLayouts.map(l =>
-          l.i === widget.i
-            ? { ...l, w: l.w - overlapLeft }
-            : l
-        );
-        if (!shrinkSuccess) shrunkWidgets.push(widget.i);
-        shrinkSuccess = true;
-      }
-      // Shrink from bottom (just reduce height)
-      else if (overlapTop > 0 && currentWidget.h - overlapTop >= minSizes.minH) {
-        workingLayouts = workingLayouts.map(l =>
-          l.i === widget.i
-            ? { ...l, h: l.h - overlapTop }
-            : l
-        );
-        if (!shrinkSuccess) shrunkWidgets.push(widget.i);
-        shrinkSuccess = true;
-      }
-
-      if (!shrinkSuccess) {
-        // Cannot accommodate this resize
-        return { canResize: false, newLayouts: layouts, movedWidgets: [], shrunkWidgets: [] };
-      }
-    }
+  // Don't do any fallback repositioning or shrinking - widgets should only be pushed in the resize direction
+  // If push failed above, we already returned. If we get here with affected widgets, reject the resize.
+  if (affectedWidgets.length > 0 && movedWidgets.length === 0) {
+    console.log('[DEBUG] Affected widgets exist but none were pushed, rejecting resize');
+    return { canResize: false, newLayouts: layouts, movedWidgets: [], shrunkWidgets: [] };
   }
 
   // Apply resize to the resizing widget (including position change for top/left resize)
@@ -662,7 +578,7 @@ export function calculateResizeSpace(
     l.i === resizingId ? { ...l, x: newX, y: newY, w: newW, h: newH } : l
   );
 
-  return { canResize: true, newLayouts: workingLayouts, movedWidgets, shrunkWidgets };
+  return { canResize: true, newLayouts: workingLayouts, movedWidgets, shrunkWidgets: [] };
 }
 
 /**
