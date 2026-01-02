@@ -80,16 +80,11 @@ export const DashboardLayout: React.FC = () => {
   }, [layouts]);
 
   // Calculate max rows based on viewport height
-  // react-grid-layout total height = topPadding + (n * rowHeight) + ((n-1) * margin) + bottomPadding
-  // = 2*padding + n*rowHeight + (n-1)*margin
-  // = 2*padding - margin + n*(rowHeight + margin)
-  // Solving for n: n = (containerHeight - 2*padding + margin) / (rowHeight + margin)
   const rowHeight = GRID_CONFIG.rowHeight; // 25px
   const marginY = GRID_CONFIG.margin[1]; // 7px
-  const paddingY = GRID_CONFIG.containerPadding[1]; // 8px
   const rowUnitHeight = rowHeight + marginY; // 32px per row
   
-  // Proper calculation accounting for container padding
+  // Calculate max rows to fill container
   const availableForContent = containerHeight + marginY;
   const maxRows = Math.max(1, Math.floor(availableForContent / rowUnitHeight));
 
