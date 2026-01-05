@@ -722,7 +722,8 @@ function tryPushWidgetsInDirection(
 /**
  * Calculate swap between two widgets
  * Widgets always keep their original sizes - positions are adjusted automatically
- * to fit the available space
+ * to fit the available space. When direct swap is not possible, tries to push
+ * other widgets horizontally to make space.
  * @param layouts - Current layouts
  * @param sourceId - Source widget ID (being dragged)
  * @param targetId - Target widget ID (being swapped with)
@@ -740,7 +741,17 @@ export function calculateSwap(
   const sourceLayout = layouts.find(l => l.i === sourceId);
   const targetLayout = layouts.find(l => l.i === targetId);
 
+  console.log('[SWAP DEBUG] calculateSwap called:', {
+    sourceId,
+    targetId,
+    sourceLayout: sourceLayout ? { x: sourceLayout.x, y: sourceLayout.y, w: sourceLayout.w, h: sourceLayout.h } : null,
+    targetLayout: targetLayout ? { x: targetLayout.x, y: targetLayout.y, w: targetLayout.w, h: targetLayout.h } : null,
+    cols,
+    maxRows
+  });
+
   if (!sourceLayout || !targetLayout) {
+    console.log('[SWAP DEBUG] Source or target not found, returning null');
     return null;
   }
 
@@ -748,264 +759,70 @@ export function calculateSwap(
   const gridCols = cols ?? 12;
   const gridRows = maxRows ?? 20;
 
-  // Create occupancy grid excluding both source and target widgets
-  const occupancy = createOccupancyGrid(layouts, gridCols, gridRows, sourceId);
-  // Also exclude target from the occupancy
-  for (let row = targetLayout.y; row < Math.min(targetLayout.y + targetLayout.h, gridRows); row++) {
-    for (let col = targetLayout.x; col < Math.min(targetLayout.x + targetLayout.w, gridCols); col++) {
-      if (occupancy.grid[row]) {
-        occupancy.grid[row][col] = false;
-      }
-    }
+  // SIMPLE SWAP: Source goes to Target's position, Target goes to Source's position
+  // NO pushing of other widgets - if it doesn't fit, swap fails
+
+  // New positions after swap
+  const sourceNewX = targetLayout.x;
+  const sourceNewY = targetLayout.y;
+  const targetNewX = sourceLayout.x;
+  const targetNewY = sourceLayout.y;
+
+  console.log('[SWAP DEBUG] Trying simple swap:', {
+    source: { from: { x: sourceLayout.x, y: sourceLayout.y }, to: { x: sourceNewX, y: sourceNewY } },
+    target: { from: { x: targetLayout.x, y: targetLayout.y }, to: { x: targetNewX, y: targetNewY } }
+  });
+
+  // Check 1: Source at target's position - within grid bounds?
+  if (sourceNewX + sourceLayout.w > gridCols || sourceNewY + sourceLayout.h > gridRows) {
+    console.log('[SWAP DEBUG] Source would exceed grid bounds at target position');
+    return null;
   }
 
-  // Try to find positions for both widgets with their original sizes
-  // Strategy 1: Direct swap - source goes to target's position, target goes to source's position
-  let sourceNewX = targetLayout.x;
-  let sourceNewY = targetLayout.y;
-  let targetNewX = sourceLayout.x;
-  let targetNewY = sourceLayout.y;
-
-  // Adjust source position if it doesn't fit at target's exact position
-  // Try to keep it close to the target's original position
-  if (sourceNewX + sourceLayout.w > gridCols) {
-    sourceNewX = gridCols - sourceLayout.w;
+  // Check 2: Target at source's position - within grid bounds?
+  if (targetNewX + targetLayout.w > gridCols || targetNewY + targetLayout.h > gridRows) {
+    console.log('[SWAP DEBUG] Target would exceed grid bounds at source position');
+    return null;
   }
-  if (sourceNewX < 0) sourceNewX = 0;
 
-  if (sourceNewY + sourceLayout.h > gridRows) {
-    sourceNewY = gridRows - sourceLayout.h;
-  }
-  if (sourceNewY < 0) sourceNewY = 0;
-
-  // Adjust target position if it doesn't fit at source's exact position
-  if (targetNewX + targetLayout.w > gridCols) {
-    targetNewX = gridCols - targetLayout.w;
-  }
-  if (targetNewX < 0) targetNewX = 0;
-
-  if (targetNewY + targetLayout.h > gridRows) {
-    targetNewY = gridRows - targetLayout.h;
-  }
-  if (targetNewY < 0) targetNewY = 0;
-
-  // Check if adjusted positions overlap
+  // Create zones for new positions
   const sourceNewZone: GridZone = { x: sourceNewX, y: sourceNewY, w: sourceLayout.w, h: sourceLayout.h };
   const targetNewZone: GridZone = { x: targetNewX, y: targetNewY, w: targetLayout.w, h: targetLayout.h };
 
-  // If they overlap, we need to find alternative positions
+  // Check 3: Do the swapped widgets overlap each other? (due to different sizes)
   if (zonesOverlap(sourceNewZone, targetNewZone)) {
-    // Try placing source at target position first, then find space for target
-    const sourceCanFitAtTarget = canFitAt(occupancy, sourceNewX, sourceNewY, sourceLayout.w, sourceLayout.h);
+    console.log('[SWAP DEBUG] Swapped widgets would overlap each other - sizes incompatible');
+    return null;
+  }
 
-    if (sourceCanFitAtTarget) {
-      // Mark source's new position as occupied temporarily
-      const tempOccupancy = createOccupancyGrid(layouts, gridCols, gridRows, sourceId);
-      for (let row = targetLayout.y; row < Math.min(targetLayout.y + targetLayout.h, gridRows); row++) {
-        for (let col = targetLayout.x; col < Math.min(targetLayout.x + targetLayout.w, gridCols); col++) {
-          if (tempOccupancy.grid[row]) {
-            tempOccupancy.grid[row][col] = false;
-          }
-        }
-      }
-      // Mark source's new position
-      for (let row = sourceNewY; row < Math.min(sourceNewY + sourceLayout.h, gridRows); row++) {
-        for (let col = sourceNewX; col < Math.min(sourceNewX + sourceLayout.w, gridCols); col++) {
-          if (tempOccupancy.grid[row]) {
-            tempOccupancy.grid[row][col] = true;
-          }
-        }
-      }
+  // Check 4: Do swapped widgets overlap any OTHER widget?
+  for (const layout of layouts) {
+    if (layout.i === sourceId || layout.i === targetId) continue;
 
-      // Find best position for target widget near source's original position
-      const targetPos = findBestPositionNear(
-        tempOccupancy,
-        sourceLayout.x,
-        sourceLayout.y,
-        targetLayout.w,
-        targetLayout.h,
-        gridCols,
-        gridRows
-      );
+    const otherZone: GridZone = { x: layout.x, y: layout.y, w: layout.w, h: layout.h };
 
-      if (targetPos) {
-        targetNewX = targetPos.x;
-        targetNewY = targetPos.y;
-      } else {
-        return null; // Can't find space for target
-      }
-    } else {
-      // Try the reverse: place target first, then source
-      const targetCanFitAtSource = canFitAt(occupancy, targetNewX, targetNewY, targetLayout.w, targetLayout.h);
-
-      if (targetCanFitAtSource) {
-        // Mark target's new position as occupied temporarily
-        const tempOccupancy = createOccupancyGrid(layouts, gridCols, gridRows, sourceId);
-        for (let row = targetLayout.y; row < Math.min(targetLayout.y + targetLayout.h, gridRows); row++) {
-          for (let col = targetLayout.x; col < Math.min(targetLayout.x + targetLayout.w, gridCols); col++) {
-            if (tempOccupancy.grid[row]) {
-              tempOccupancy.grid[row][col] = false;
-            }
-          }
-        }
-        // Mark target's new position
-        for (let row = targetNewY; row < Math.min(targetNewY + targetLayout.h, gridRows); row++) {
-          for (let col = targetNewX; col < Math.min(targetNewX + targetLayout.w, gridCols); col++) {
-            if (tempOccupancy.grid[row]) {
-              tempOccupancy.grid[row][col] = true;
-            }
-          }
-        }
-
-        // Find best position for source widget near target's original position
-        const sourcePos = findBestPositionNear(
-          tempOccupancy,
-          targetLayout.x,
-          targetLayout.y,
-          sourceLayout.w,
-          sourceLayout.h,
-          gridCols,
-          gridRows
-        );
-
-        if (sourcePos) {
-          sourceNewX = sourcePos.x;
-          sourceNewY = sourcePos.y;
-        } else {
-          return null; // Can't find space for source
-        }
-      } else {
-        return null; // Neither widget can fit at the other's position
-      }
-    }
-  } else {
-    // No overlap - verify both can fit at their positions
-    const sourceCanFit = canFitAt(occupancy, sourceNewX, sourceNewY, sourceLayout.w, sourceLayout.h);
-
-    // Create occupancy with source placed
-    const occupancyWithSource = createOccupancyGrid(layouts, gridCols, gridRows, sourceId);
-    for (let row = targetLayout.y; row < Math.min(targetLayout.y + targetLayout.h, gridRows); row++) {
-      for (let col = targetLayout.x; col < Math.min(targetLayout.x + targetLayout.w, gridCols); col++) {
-        if (occupancyWithSource.grid[row]) {
-          occupancyWithSource.grid[row][col] = false;
-        }
-      }
-    }
-    for (let row = sourceNewY; row < Math.min(sourceNewY + sourceLayout.h, gridRows); row++) {
-      for (let col = sourceNewX; col < Math.min(sourceNewX + sourceLayout.w, gridCols); col++) {
-        if (occupancyWithSource.grid[row]) {
-          occupancyWithSource.grid[row][col] = true;
-        }
-      }
+    if (zonesOverlap(sourceNewZone, otherZone)) {
+      console.log('[SWAP DEBUG] Source at new position overlaps with widget:', layout.i);
+      return null;
     }
 
-    const targetCanFit = canFitAt(occupancyWithSource, targetNewX, targetNewY, targetLayout.w, targetLayout.h);
-
-    if (!sourceCanFit || !targetCanFit) {
-      // Try to find alternative positions
-      if (!sourceCanFit) {
-        const sourcePos = findBestPositionNear(occupancy, targetLayout.x, targetLayout.y, sourceLayout.w, sourceLayout.h, gridCols, gridRows);
-        if (sourcePos) {
-          sourceNewX = sourcePos.x;
-          sourceNewY = sourcePos.y;
-        } else {
-          return null;
-        }
-      }
-
-      // Recalculate occupancy with source placed
-      const newOccupancy = createOccupancyGrid(layouts, gridCols, gridRows, sourceId);
-      for (let row = targetLayout.y; row < Math.min(targetLayout.y + targetLayout.h, gridRows); row++) {
-        for (let col = targetLayout.x; col < Math.min(targetLayout.x + targetLayout.w, gridCols); col++) {
-          if (newOccupancy.grid[row]) {
-            newOccupancy.grid[row][col] = false;
-          }
-        }
-      }
-      for (let row = sourceNewY; row < Math.min(sourceNewY + sourceLayout.h, gridRows); row++) {
-        for (let col = sourceNewX; col < Math.min(sourceNewX + sourceLayout.w, gridCols); col++) {
-          if (newOccupancy.grid[row]) {
-            newOccupancy.grid[row][col] = true;
-          }
-        }
-      }
-
-      if (!canFitAt(newOccupancy, targetNewX, targetNewY, targetLayout.w, targetLayout.h)) {
-        const targetPos = findBestPositionNear(newOccupancy, sourceLayout.x, sourceLayout.y, targetLayout.w, targetLayout.h, gridCols, gridRows);
-        if (targetPos) {
-          targetNewX = targetPos.x;
-          targetNewY = targetPos.y;
-        } else {
-          return null;
-        }
-      }
+    if (zonesOverlap(targetNewZone, otherZone)) {
+      console.log('[SWAP DEBUG] Target at new position overlaps with widget:', layout.i);
+      return null;
     }
   }
 
-  // Return swapped layouts with original sizes preserved
+  // All checks passed - simple swap is possible!
+  console.log('[SWAP DEBUG] Simple swap successful - no other widgets affected');
+
   return layouts.map(l => {
     if (l.i === sourceId) {
-      return {
-        ...l,
-        x: sourceNewX,
-        y: sourceNewY,
-        // Keep original w and h
-      };
+      return { ...l, x: sourceNewX, y: sourceNewY };
     } else if (l.i === targetId) {
-      return {
-        ...l,
-        x: targetNewX,
-        y: targetNewY,
-        // Keep original w and h
-      };
+      return { ...l, x: targetNewX, y: targetNewY };
     }
     return l;
   });
-}
-
-/**
- * Find the best position for a widget near a target position
- * Searches in expanding rings around the target position
- */
-function findBestPositionNear(
-  occupancy: OccupancyGrid,
-  targetX: number,
-  targetY: number,
-  widgetW: number,
-  widgetH: number,
-  cols: number,
-  maxRows: number
-): { x: number; y: number } | null {
-  // First try the exact target position
-  if (canFitAt(occupancy, targetX, targetY, widgetW, widgetH)) {
-    return { x: targetX, y: targetY };
-  }
-
-  // Search in expanding rings around the target
-  const maxDistance = Math.max(cols, maxRows);
-
-  for (let distance = 1; distance < maxDistance; distance++) {
-    // Check all positions at this distance
-    for (let dy = -distance; dy <= distance; dy++) {
-      for (let dx = -distance; dx <= distance; dx++) {
-        // Only check positions on the ring (perimeter)
-        if (Math.abs(dx) !== distance && Math.abs(dy) !== distance) continue;
-
-        const x = targetX + dx;
-        const y = targetY + dy;
-
-        // Check bounds
-        if (x < 0 || y < 0 || x + widgetW > cols || y + widgetH > maxRows) continue;
-
-        if (canFitAt(occupancy, x, y, widgetW, widgetH)) {
-          return { x, y };
-        }
-      }
-    }
-  }
-
-  // Fall back to finding any available position
-  return findFirstFitPosition(occupancy, widgetW, widgetH);
 }
 
 /**
