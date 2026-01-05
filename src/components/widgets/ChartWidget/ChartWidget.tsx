@@ -109,7 +109,7 @@ export const ChartWidget: React.FC<any> = ({ symbol = 'AAPL', interval: initialI
               stroke={lineColor}
               strokeWidth={2}
               dot={false}
-              animationDuration={300}
+              isAnimationActive={false}
             />
           </LineChart>
         </ResponsiveContainer>

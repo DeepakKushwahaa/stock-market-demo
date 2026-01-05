@@ -532,6 +532,11 @@ export const DashboardLayout: React.FC = () => {
       movedWidgets: resizePreview?.movedWidgets?.length ?? 0,
     });
 
+    // Get resize direction to enforce cross-direction constraints
+    const direction = resizeDirectionRef.current;
+    const isHorizontalOnly = direction === 'e' || direction === 'w';
+    const isVerticalOnly = direction === 's' || direction === 'n';
+
     // Feature 6: Apply resize space management if preview is active
     if (resizePreview && resizePreview.newLayouts.length > 0) {
       resizeLogger.log('APPLYING PREVIEW', {
@@ -539,8 +544,31 @@ export const DashboardLayout: React.FC = () => {
       });
       resizeLogger.endSession();
 
+      // CRITICAL: For single-direction resize, enforce NO cross-direction movement
+      let constrainedLayouts = resizePreview.newLayouts;
+
+      if (isHorizontalOnly) {
+        // For horizontal-only resize, preserve Y positions from resizeStartLayout
+        constrainedLayouts = resizePreview.newLayouts.map(layout => {
+          const originalLayout = resizeStartLayoutRef.current.find(l => l.i === layout.i);
+          if (originalLayout) {
+            return { ...layout, y: originalLayout.y, h: originalLayout.h };
+          }
+          return layout;
+        });
+      } else if (isVerticalOnly) {
+        // For vertical-only resize, preserve X positions from resizeStartLayout
+        constrainedLayouts = resizePreview.newLayouts.map(layout => {
+          const originalLayout = resizeStartLayoutRef.current.find(l => l.i === layout.i);
+          if (originalLayout) {
+            return { ...layout, x: originalLayout.x, w: originalLayout.w };
+          }
+          return layout;
+        });
+      }
+
       // Final validation: ensure no widget is outside viewport before applying
-      const hasInvalidPosition = resizePreview.newLayouts.some(layout =>
+      const hasInvalidPosition = constrainedLayouts.some(layout =>
         layout.x < 0 ||
         layout.x + layout.w > cols ||
         layout.y < 0 ||
@@ -552,11 +580,12 @@ export const DashboardLayout: React.FC = () => {
         updateLayouts(lastValidLayoutRef.current);
         setResizePreview(null);
         isResizingRef.current = false;
+        resizeDirectionRef.current = null;
         return;
       }
 
-      const maxDimensions = calculateMaxDimensions(resizePreview.newLayouts);
-      const validLayout = resizePreview.newLayouts.map(item => {
+      const maxDimensions = calculateMaxDimensions(constrainedLayouts);
+      const validLayout = constrainedLayouts.map(item => {
         const widget = widgets.find(w => w.i === item.i);
         const sizes = widget ? DEFAULT_WIDGET_SIZES[widget.type] : DEFAULT_WIDGET_SIZES.chart;
         const dimensions = maxDimensions.get(item.i) ?? { maxH: maxRows - item.y, maxW: cols - item.x };
@@ -575,16 +604,18 @@ export const DashboardLayout: React.FC = () => {
       setResizePreview(null);
       // Reset isResizing AFTER layout update to prevent handleLayoutChange from interfering
       isResizingRef.current = false;
+      resizeDirectionRef.current = null;
       return;
     }
 
     // Reset isResizing flag
     isResizingRef.current = false;
+    resizeDirectionRef.current = null;
 
     setResizePreview(null);
 
     // Feature 2: Enforce minimum dimensions
-    const validatedLayout = newLayout.map(item => {
+    let validatedLayout = newLayout.map(item => {
       const widget = widgets.find(w => w.i === item.i);
       const widgetType = widget?.type || 'chart';
       const minSizes = DEFAULT_WIDGET_SIZES[widgetType];
@@ -594,6 +625,25 @@ export const DashboardLayout: React.FC = () => {
         h: Math.max(item.h, minSizes.minH),
       };
     });
+
+    // CRITICAL: For single-direction resize without preview, enforce NO cross-direction movement
+    if (isHorizontalOnly) {
+      validatedLayout = validatedLayout.map(item => {
+        const originalLayout = resizeStartLayoutRef.current.find(l => l.i === item.i);
+        if (originalLayout) {
+          return { ...item, y: originalLayout.y, h: originalLayout.h };
+        }
+        return item;
+      });
+    } else if (isVerticalOnly) {
+      validatedLayout = validatedLayout.map(item => {
+        const originalLayout = resizeStartLayoutRef.current.find(l => l.i === item.i);
+        if (originalLayout) {
+          return { ...item, x: originalLayout.x, w: originalLayout.w };
+        }
+        return item;
+      });
+    }
 
     // Check if any widget is outside viewport (vertical or horizontal)
     const isInvalid = validatedLayout.some(item =>
@@ -730,7 +780,6 @@ export const DashboardLayout: React.FC = () => {
       const isWestResize = direction.includes('w');
       const isSouthResize = direction.includes('s');
       const isNorthResize = direction.includes('n');
-      const isCornerResize = direction.length === 2; // se, sw, ne, nw
 
       const isHorizontalResize = isEastResize || isWestResize;
       const isVerticalResize = isSouthResize || isNorthResize;
@@ -749,49 +798,16 @@ export const DashboardLayout: React.FC = () => {
       // Calculate mouse deltas
       const mouseDeltaX = e.clientX - resizeStartMouseXRef.current;
       const mouseDeltaY = e.clientY - resizeStartMouseYRef.current;
-      const absMouseDeltaX = Math.abs(mouseDeltaX);
-      const absMouseDeltaY = Math.abs(mouseDeltaY);
 
-      // For corner resizes, determine which direction is dominant
-      let handleHorizontal = isHorizontalResize;
-      let handleVertical = isVerticalResize;
-
-      if (isCornerResize) {
-        // For corner resizes, only handle one direction at a time based on dominant movement
-        // Require 2x dominance to switch modes
-        const isHorizontalDominant = absMouseDeltaX > absMouseDeltaY * 2;
-        const isVerticalDominant = absMouseDeltaY > absMouseDeltaX * 2;
-
-        if (isHorizontalDominant) {
-          handleVertical = false;
-        } else if (isVerticalDominant) {
-          handleHorizontal = false;
-        } else {
-          // Neither is dominant enough - don't handle push, just constrain width if needed
-          if (lastPushedLayoutRef.current) {
-            for (const l of baseLayouts) {
-              if (l.i !== resizingWidgetIdRef.current) {
-                moveWidgetDom(l.i, l.x, l.y);
-              }
-            }
-            setResizePreview(null);
-            lastPushedLayoutRef.current = null;
-          }
-          // Constrain width to original during ambiguous corner resize
-          const element = widgetDomMapRef.current.get(resizingWidgetIdRef.current);
-          if (element) {
-            const originalPixelW = resizingLayout.w * colWidth + (resizingLayout.w - 1) * GRID_CONFIG.margin[0];
-            element.style.width = `${originalPixelW}px`;
-          }
-          return;
-        }
-      }
+      // For corner resizes, handle BOTH directions simultaneously for real-time resize
+      const handleHorizontal = isHorizontalResize;
+      const handleVertical = isVerticalResize;
 
       // Calculate grid deltas
       const gridDeltaX = Math.round(mouseDeltaX / cellWidth);
       const gridDeltaY = Math.round(mouseDeltaY / cellHeight);
 
-      // HORIZONTAL RESIZE HANDLING (east/west) - Push widgets until viewport edge
+      // HORIZONTAL RESIZE HANDLING (east/west) - GAP FILL FIRST, THEN PUSH
       if (handleHorizontal && !handleVertical) {
         const effectiveDeltaX = isEastResize ? gridDeltaX : -gridDeltaX;
         const requestedW = resizingLayout.w + effectiveDeltaX;
@@ -830,7 +846,7 @@ export const DashboardLayout: React.FC = () => {
           return;
         }
 
-        // Expanding - need to push widgets until they hit viewport edge (CHAIN PUSHING)
+        // Expanding - GAP FILL FIRST, THEN PUSH widgets until they hit viewport edge
         const originalRightEdge = resizingLayout.x + resizingLayout.w;
         const originalLeftEdge = resizingLayout.x;
 
@@ -848,280 +864,438 @@ export const DashboardLayout: React.FC = () => {
           return hasVerticalOverlapBetween(resizingLayout, widget);
         };
 
-        // CHAIN PUSH: Find ALL widgets that form a chain from resizing widget to viewport
-        // A chain is formed when widgets block each other horizontally AND have vertical overlap
+        // Get all other widgets
         const allWidgets = baseLayouts
           .filter(l => l.i !== resizingWidgetIdRef.current)
           .map(l => ({ id: l.i, x: l.x, w: l.w, y: l.y, h: l.h }));
 
-        // Build the chain of widgets that need to be pushed
-        const widgetsToPush: Array<{ id: string; x: number; w: number; y: number; h: number }> = [];
-        const processed = new Set<string>();
+        // Find widgets that have vertical overlap with resizing widget (direct collision targets)
+        const widgetsWithDirectOverlap = allWidgets.filter(w => hasVerticalOverlap(w));
 
-        // Start with widgets directly ADJACENT to the resizing widget (touching, no gap)
-        const directlyBlocked = allWidgets.filter(w => {
-          if (!hasVerticalOverlap(w)) return false;
-          if (isEastResize) {
-            // Widget must START exactly at resizing widget's right edge (no gap)
-            return w.x === originalRightEdge;
-          }
-          // West resize - widget must END exactly at resizing widget's left edge
-          return w.x + w.w === originalLeftEdge;
-        });
-
-        // BFS to find all widgets in the chain
-        // IMPORTANT: Only add widgets that are ADJACENT (touching) to the chain
-        const queue = [...directlyBlocked];
-        while (queue.length > 0) {
-          const current = queue.shift()!;
-          if (processed.has(current.id)) continue;
-          processed.add(current.id);
-          widgetsToPush.push(current);
-
-          // Find widgets that this widget would push (must be ADJACENT - touching or overlapping)
-          for (const other of allWidgets) {
-            if (processed.has(other.id)) continue;
-            if (!hasVerticalOverlapBetween(current, other)) continue;
-
-            if (isEastResize) {
-              // Other widget must be ADJACENT to current's right edge (touching or within 1 column)
-              // This means other.x should equal current.x + current.w (no gap)
-              const currentRightEdge = current.x + current.w;
-              if (other.x === currentRightEdge) {
-                queue.push(other);
-              }
-            } else {
-              // Other widget must be ADJACENT to current's left edge
-              const currentLeftEdge = current.x;
-              if (other.x + other.w === currentLeftEdge) {
-                queue.push(other);
-              }
-            }
-          }
-        }
-
-        // Sort widgets by X position (left to right for east, right to left for west)
-        widgetsToPush.sort((a, b) => isEastResize ? a.x - b.x : b.x - a.x);
-
-        // Find widgets NOT in the chain that could block the push
-        const chainIds = new Set(widgetsToPush.map(w => w.id));
-        const nonChainWidgets = allWidgets.filter(w => !chainIds.has(w.id));
-
-        // Calculate available space considering:
-        // 1. Viewport edge
-        // 2. Non-chain widgets that could block (have vertical overlap with chain widgets)
-        let availableSpace: number;
+        // Find the FIRST widget in the resize direction that has DIRECT vertical overlap
+        let gapToFirstWidget = 0;
+        let firstWidgetEdge = isEastResize ? GRID_CONFIG.cols : 0;
 
         if (isEastResize) {
-          if (widgetsToPush.length > 0) {
-            // Find the rightmost edge of all widgets in the chain
-            const rightmostEdge = Math.max(...widgetsToPush.map(w => w.x + w.w));
-
-            // Check if any non-chain widget would block the push
-            // A non-chain widget blocks if it has vertical overlap with ANY chain widget
-            // and is to the right of the chain
-            let blockingEdge = GRID_CONFIG.cols; // Default to viewport edge
-
-            for (const nonChain of nonChainWidgets) {
-              // Check if this non-chain widget has vertical overlap with any chain widget
-              const hasOverlapWithChain = widgetsToPush.some(chainWidget =>
-                hasVerticalOverlapBetween(chainWidget, nonChain)
-              );
-
-              if (hasOverlapWithChain && nonChain.x >= rightmostEdge) {
-                // This widget could block - find the closest one
-                blockingEdge = Math.min(blockingEdge, nonChain.x);
-              }
-            }
-
-            availableSpace = blockingEdge - rightmostEdge;
+          // Find widgets to the RIGHT of resizing widget with direct overlap
+          const widgetsToRight = widgetsWithDirectOverlap.filter(w => w.x >= originalRightEdge);
+          if (widgetsToRight.length > 0) {
+            widgetsToRight.sort((a, b) => a.x - b.x);
+            firstWidgetEdge = widgetsToRight[0].x;
+            gapToFirstWidget = firstWidgetEdge - originalRightEdge;
           } else {
-            // No widgets to push - check for blockers from original right edge
-            let blockingEdge = GRID_CONFIG.cols;
-
-            for (const nonChain of nonChainWidgets) {
-              if (hasVerticalOverlap(nonChain) && nonChain.x >= originalRightEdge) {
-                blockingEdge = Math.min(blockingEdge, nonChain.x);
-              }
-            }
-
-            availableSpace = blockingEdge - originalRightEdge;
+            gapToFirstWidget = GRID_CONFIG.cols - originalRightEdge;
           }
         } else {
           // West resize
-          if (widgetsToPush.length > 0) {
-            // Find the leftmost edge of all widgets in the chain
-            const leftmostEdge = Math.min(...widgetsToPush.map(w => w.x));
-
-            // Check for blocking non-chain widgets to the left
-            let blockingEdge = 0; // Default to viewport edge
-
-            for (const nonChain of nonChainWidgets) {
-              const hasOverlapWithChain = widgetsToPush.some(chainWidget =>
-                hasVerticalOverlapBetween(chainWidget, nonChain)
-              );
-
-              if (hasOverlapWithChain && nonChain.x + nonChain.w <= leftmostEdge) {
-                // This widget could block - find the closest one (rightmost edge)
-                blockingEdge = Math.max(blockingEdge, nonChain.x + nonChain.w);
-              }
-            }
-
-            availableSpace = leftmostEdge - blockingEdge;
+          const widgetsToLeft = widgetsWithDirectOverlap.filter(w => w.x + w.w <= originalLeftEdge);
+          if (widgetsToLeft.length > 0) {
+            widgetsToLeft.sort((a, b) => (b.x + b.w) - (a.x + a.w));
+            firstWidgetEdge = widgetsToLeft[0].x + widgetsToLeft[0].w;
+            gapToFirstWidget = originalLeftEdge - firstWidgetEdge;
           } else {
-            // No widgets to push - check for blockers from original left edge
-            let blockingEdge = 0;
-
-            for (const nonChain of nonChainWidgets) {
-              if (hasVerticalOverlap(nonChain) && nonChain.x + nonChain.w <= originalLeftEdge) {
-                blockingEdge = Math.max(blockingEdge, nonChain.x + nonChain.w);
-              }
-            }
-
-            availableSpace = originalLeftEdge - blockingEdge;
+            gapToFirstWidget = originalLeftEdge;
           }
         }
 
-        // Calculate max allowed width
-        const maxAllowedWidth = resizingLayout.w + availableSpace;
+        // Calculate how much of the expansion goes into the gap vs pushing
+        const expansion = requestedW - resizingLayout.w;
+        const gapFill = Math.min(expansion, gapToFirstWidget);
+        const pushAmount = Math.max(0, expansion - gapToFirstWidget);
 
-        // Calculate final width (limited by available space)
-        const finalW = Math.max(minW, Math.min(requestedW, maxAllowedWidth));
-        const finalX = isWestResize
-          ? resizingLayout.x + resizingLayout.w - finalW
-          : resizingLayout.x;
+        console.log('=== GAP FILL LOGIC ===');
+        console.log('Original edge:', isEastResize ? originalRightEdge : originalLeftEdge);
+        console.log('First widget edge:', firstWidgetEdge);
+        console.log('Gap to first widget:', gapToFirstWidget);
+        console.log('Total expansion requested:', expansion);
+        console.log('Gap fill:', gapFill);
+        console.log('Push amount:', pushAmount);
+        console.log('======================');
 
-        // Calculate expansion amount
-        const expansion = finalW - resizingLayout.w;
+        // NEW LOGIC: Push ALL widgets that are in the resize direction
+        // Each widget that has vertical overlap with resizing widget gets pushed,
+        // AND each widget that has vertical overlap with ANY pushed widget also gets pushed (chain)
 
-        // Calculate new positions for pushed widgets
-        const newPositions: Map<string, number> = new Map();
+        let widgetsToPush: Array<{ id: string; x: number; w: number; y: number; h: number }> = [];
 
-        if (expansion > 0) {
-          if (isEastResize) {
-            for (const w of widgetsToPush) {
-              const newX = w.x + expansion;
-              // Clamp to viewport edge
-              const clampedX = Math.min(newX, GRID_CONFIG.cols - w.w);
-              newPositions.set(w.id, clampedX);
-            }
-          } else {
-            for (const w of widgetsToPush) {
-              const newX = w.x - expansion;
-              // Clamp to viewport edge (x=0)
-              const clampedX = Math.max(0, newX);
-              newPositions.set(w.id, clampedX);
+        if (isEastResize) {
+          // Get ALL widgets to the right of resizing widget
+          const widgetsToRight = allWidgets
+            .filter(w => w.x >= originalRightEdge)
+            .sort((a, b) => a.x - b.x);
+
+          console.log('=== EAST RESIZE DEBUG ===');
+          console.log('Resizing widget right edge:', originalRightEdge);
+          console.log('All widgets to right:', widgetsToRight.length);
+          widgetsToRight.forEach(w => {
+            const overlap = hasVerticalOverlap(w);
+            console.log(`  Widget ${w.id.slice(-8)}: x=${w.x}, y=${w.y}, w=${w.w}, h=${w.h}, verticalOverlap=${overlap}`);
+          });
+
+          // Start with widgets that have direct vertical overlap with resizing widget
+          const directPushWidgets = widgetsToRight.filter(w => hasVerticalOverlap(w));
+          console.log('Direct push widgets (vertical overlap with resizing):', directPushWidgets.length);
+
+          // Chain reaction - BFS to find all connected widgets
+          const pushedSet = new Set<string>();
+          const queue = [...directPushWidgets];
+
+          while (queue.length > 0) {
+            const current = queue.shift()!;
+            if (pushedSet.has(current.id)) continue;
+            pushedSet.add(current.id);
+            widgetsToPush.push(current);
+            console.log(`Added to push: ${current.id.slice(-8)} at x=${current.x}`);
+
+            // Find ALL widgets to the right that have vertical overlap with current
+            const currentRightEdge = current.x + current.w;
+            console.log(`  Looking for widgets to right of ${current.id.slice(-8)}, rightEdge=${currentRightEdge}`);
+
+            for (const other of widgetsToRight) {
+              if (pushedSet.has(other.id)) continue;
+
+              // Check if other is to the right of current
+              const isToRight = other.x >= currentRightEdge;
+              // Check vertical overlap with current widget
+              const hasOverlap = !(current.y + current.h <= other.y || current.y >= other.y + other.h);
+
+              console.log(`    Checking ${other.id.slice(-8)}: x=${other.x}, isToRight=${isToRight}, hasOverlap=${hasOverlap}`);
+
+              if (isToRight && hasOverlap) {
+                console.log(`    -> Adding to queue!`);
+                queue.push(other);
+              }
             }
           }
-        }
 
-        console.log('=== HORIZONTAL RESIZE DEBUG (CHAIN PUSH MODE) ===');
-        console.log('Resizing widget:', resizingLayout.i.slice(-8), `x=${resizingLayout.x}, y=${resizingLayout.y}, w=${resizingLayout.w}, h=${resizingLayout.h}`);
-        console.log('RequestedW:', requestedW, 'FinalW:', finalW, 'MaxAllowedWidth:', maxAllowedWidth, 'AvailableSpace:', availableSpace);
-        console.log('Expansion:', expansion);
-        console.log('Widgets in chain:', widgetsToPush.length);
-        widgetsToPush.forEach(w => {
-          const newX = newPositions.get(w.id);
-          console.log(`  - ${w.id.slice(-8)}: x=${w.x} -> ${newX}, y=${w.y}, w=${w.w}, h=${w.h}`);
-        });
-        console.log('=== END DEBUG ===');
+          widgetsToPush.sort((a, b) => a.x - b.x);
+          console.log('=== END EAST RESIZE DEBUG ===');
+        } else {
+          // West resize - similar logic
+          const widgetsToLeft = allWidgets
+            .filter(w => w.x + w.w <= originalLeftEdge)
+            .sort((a, b) => b.x - a.x);
 
-        // CRITICAL FIX: Check if pushed widgets would vertically overlap with non-chain widgets
-        // If they would, and the non-chain widget can't move down without going out of viewport,
-        // we need to limit the expansion
-        let adjustedExpansion = expansion;
-        let adjustedFinalW = finalW;
-        let adjustedFinalX = finalX;
+          const directPushWidgets = widgetsToLeft.filter(w => hasVerticalOverlap(w));
+          const pushedSet = new Set<string>();
+          const queue = [...directPushWidgets];
 
-        if (expansion > 0) {
-          // Check each pushed widget at its new position for vertical collisions with non-chain widgets
-          for (const pushedWidget of widgetsToPush) {
-            const pushedNewX = isEastResize
-              ? pushedWidget.x + expansion
-              : pushedWidget.x - expansion;
-            const clampedPushedX = isEastResize
-              ? Math.min(pushedNewX, GRID_CONFIG.cols - pushedWidget.w)
-              : Math.max(0, pushedNewX);
+          while (queue.length > 0) {
+            const current = queue.shift()!;
+            if (pushedSet.has(current.id)) continue;
+            pushedSet.add(current.id);
+            widgetsToPush.push(current);
 
-            // Check for vertical overlap with non-chain widgets at the pushed position
-            for (const nonChain of nonChainWidgets) {
-              // Check if this non-chain widget would be in the horizontal path of the pushed widget
-              const pushedLeftEdge = clampedPushedX;
-              const pushedRightEdge = clampedPushedX + pushedWidget.w;
-              const nonChainLeftEdge = nonChain.x;
-              const nonChainRightEdge = nonChain.x + nonChain.w;
+            const currentLeftEdge = current.x;
+            for (const other of widgetsToLeft) {
+              if (pushedSet.has(other.id)) continue;
+              if (other.x + other.w > currentLeftEdge) continue;
 
-              // Check for horizontal overlap at new position
-              const hasHorizontalOverlap = !(pushedRightEdge <= nonChainLeftEdge || pushedLeftEdge >= nonChainRightEdge);
+              const hasOverlap = !(current.y + current.h <= other.y || current.y >= other.y + other.h);
+              if (hasOverlap) {
+                queue.push(other);
+              }
+            }
+          }
 
-              // Check for vertical overlap
-              const pushedTop = pushedWidget.y;
-              const pushedBottom = pushedWidget.y + pushedWidget.h;
-              const nonChainTop = nonChain.y;
-              const nonChainBottom = nonChain.y + nonChain.h;
-              const hasVerticalOverlap = !(pushedBottom <= nonChainTop || pushedTop >= nonChainBottom);
-
-              if (hasHorizontalOverlap && hasVerticalOverlap) {
-                // Collision detected! Check if non-chain widget can be pushed down
-                const spaceBelow = maxRows - nonChainBottom;
-
-                if (spaceBelow <= 0) {
-                  // Non-chain widget is at the bottom edge, can't be pushed - limit expansion
-                  // Calculate how much we can expand without causing the collision
-                  if (isEastResize) {
-                    // The pushed widget can only go as far as non-chain widget's left edge minus its width
-                    const maxPushedX = nonChainLeftEdge - pushedWidget.w;
-                    const maxExpansion = Math.max(0, maxPushedX - pushedWidget.x);
-                    if (maxExpansion < adjustedExpansion) {
-                      adjustedExpansion = maxExpansion;
-                      adjustedFinalW = resizingLayout.w + adjustedExpansion;
-                    }
-                  } else {
-                    // West resize
-                    const maxPushedX = nonChainRightEdge;
-                    const maxExpansion = Math.max(0, pushedWidget.x - maxPushedX);
-                    if (maxExpansion < adjustedExpansion) {
-                      adjustedExpansion = maxExpansion;
-                      adjustedFinalW = resizingLayout.w + adjustedExpansion;
-                      adjustedFinalX = resizingLayout.x + resizingLayout.w - adjustedFinalW;
-                    }
-                  }
-
-                  console.log('[DEBUG] Limiting expansion due to bottom widget collision:', {
-                    nonChainWidget: nonChain.id,
-                    pushedWidget: pushedWidget.id,
-                    adjustedExpansion,
-                    adjustedFinalW,
-                  });
+          for (const widget of widgetsToLeft) {
+            if (pushedSet.has(widget.id)) continue;
+            for (const pushed of widgetsToPush) {
+              if (widget.x + widget.w <= pushed.x) {
+                const hasOverlap = !(pushed.y + pushed.h <= widget.y || pushed.y >= widget.y + widget.h);
+                if (hasOverlap) {
+                  pushedSet.add(widget.id);
+                  widgetsToPush.push(widget);
+                  break;
                 }
               }
             }
           }
 
-          // Also check if the resizing widget itself would overlap with non-chain widgets after resize
+          widgetsToPush.sort((a, b) => b.x - a.x);
+        }
+
+        console.log('=== WIDGETS TO PUSH ===');
+        console.log('Total all widgets:', allWidgets.length);
+        console.log('Direct overlap widgets:', widgetsWithDirectOverlap.length);
+        console.log('Widgets to push (chain):', widgetsToPush.length);
+        widgetsToPush.forEach(w => console.log(`  - ${w.id.slice(-8)}: x=${w.x}, y=${w.y}, w=${w.w}, h=${w.h}`));
+        console.log('=======================');
+
+        // Find widgets NOT in the chain
+        const chainIds = new Set(widgetsToPush.map(w => w.id));
+        const nonChainWidgets = allWidgets.filter(w => !chainIds.has(w.id));
+
+        // Calculate available space for pushing
+        // IMPORTANT: We need to consider gaps BETWEEN widgets in the chain
+        // Total available space = (viewport edge - rightmost widget) + (sum of all gaps between widgets)
+        let availablePushSpace = 0;
+
+        console.log('=== CHECKING AVAILABLE SPACE ===');
+        console.log('pushAmount:', pushAmount);
+        console.log('widgetsToPush.length:', widgetsToPush.length);
+
+        if (widgetsToPush.length > 0) {
+          if (isEastResize) {
+            // Sort widgets left to right
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => a.x - b.x);
+
+            // Calculate total gaps between widgets in the chain
+            let totalGaps = 0;
+            for (let i = 0; i < sortedWidgets.length - 1; i++) {
+              const currentRightEdge = sortedWidgets[i].x + sortedWidgets[i].w;
+              const nextLeftEdge = sortedWidgets[i + 1].x;
+              const gap = nextLeftEdge - currentRightEdge;
+              console.log(`Gap between widget ${i} (rightEdge=${currentRightEdge}) and widget ${i+1} (leftEdge=${nextLeftEdge}): ${gap}`);
+              if (gap > 0) {
+                totalGaps += gap;
+              }
+            }
+
+            // Space at the end (viewport edge - rightmost widget)
+            const rightmostEdge = Math.max(...widgetsToPush.map(w => w.x + w.w));
+            let blockingEdge = GRID_CONFIG.cols;
+
+            console.log('Rightmost edge:', rightmostEdge);
+            console.log('GRID_CONFIG.cols:', GRID_CONFIG.cols);
+            console.log('nonChainWidgets count:', nonChainWidgets.length);
+
+            for (const nonChain of nonChainWidgets) {
+              const hasOverlapWithChain = widgetsToPush.some(chainWidget =>
+                hasVerticalOverlapBetween(chainWidget, nonChain)
+              );
+              if (hasOverlapWithChain && nonChain.x >= rightmostEdge) {
+                blockingEdge = Math.min(blockingEdge, nonChain.x);
+              }
+            }
+
+            const spaceAtEnd = blockingEdge - rightmostEdge;
+            availablePushSpace = totalGaps + spaceAtEnd;
+
+            console.log('Total gaps between widgets:', totalGaps);
+            console.log('Space at end (viewport - rightmost):', spaceAtEnd);
+            console.log('Total available push space:', availablePushSpace);
+            console.log('================================');
+          } else {
+            // West resize - similar logic
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => b.x - a.x);
+
+            let totalGaps = 0;
+            for (let i = 0; i < sortedWidgets.length - 1; i++) {
+              const currentLeftEdge = sortedWidgets[i].x;
+              const nextRightEdge = sortedWidgets[i + 1].x + sortedWidgets[i + 1].w;
+              const gap = currentLeftEdge - nextRightEdge;
+              if (gap > 0) {
+                totalGaps += gap;
+              }
+            }
+
+            const leftmostEdge = Math.min(...widgetsToPush.map(w => w.x));
+            let blockingEdge = 0;
+
+            for (const nonChain of nonChainWidgets) {
+              const hasOverlapWithChain = widgetsToPush.some(chainWidget =>
+                hasVerticalOverlapBetween(chainWidget, nonChain)
+              );
+              if (hasOverlapWithChain && nonChain.x + nonChain.w <= leftmostEdge) {
+                blockingEdge = Math.max(blockingEdge, nonChain.x + nonChain.w);
+              }
+            }
+
+            const spaceAtEnd = leftmostEdge - blockingEdge;
+            availablePushSpace = totalGaps + spaceAtEnd;
+          }
+        }
+
+        // Calculate actual push (limited by available space)
+        const actualPush = Math.min(pushAmount, availablePushSpace);
+        const totalExpansion = gapFill + actualPush;
+
+        // Calculate final dimensions
+        const finalW = Math.max(minW, resizingLayout.w + totalExpansion);
+        const finalX = isWestResize
+          ? resizingLayout.x + resizingLayout.w - finalW
+          : resizingLayout.x;
+
+        console.log('=== FINAL CALCULATION ===');
+        console.log('Available push space:', availablePushSpace);
+        console.log('Actual push:', actualPush);
+        console.log('Total expansion:', totalExpansion);
+        console.log('Final W:', finalW);
+        console.log('=========================');
+
+        // Calculate new positions for pushed widgets
+        // CASCADING LOGIC:
+        // - Widget moves and fills its gap FIRST
+        // - Only when widget's new right edge TOUCHES next widget, next widget starts moving
+        // - Each widget absorbs push into its gap before passing remainder to next
+        const newPositions: Map<string, number> = new Map();
+
+        if (actualPush > 0) {
+          if (isEastResize) {
+            // Sort widgets left to right for cascading calculation
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => a.x - b.x);
+
+            console.log('=== CASCADING POSITION CALC (GAP FILL FIRST) ===');
+            console.log('Actual push:', actualPush);
+
+            // Process widgets from left to right
+            // Each widget moves, but next widget only moves if previous widget TOUCHES it
+            for (let i = 0; i < sortedWidgets.length; i++) {
+              const w = sortedWidgets[i];
+              const nextWidget = sortedWidgets[i + 1];
+
+              // How much does this widget need to move?
+              let pushForThisWidget: number;
+
+              if (i === 0) {
+                // First widget is pushed directly by resizing widget
+                pushForThisWidget = actualPush;
+              } else {
+                // This widget is pushed ONLY if previous widget's new right edge reaches it
+                const prevWidget = sortedWidgets[i - 1];
+                const prevNewX = newPositions.get(prevWidget.id) ?? prevWidget.x;
+                const prevNewRightEdge = prevNewX + prevWidget.w;
+
+                // If previous widget's new right edge > this widget's left edge, we need to move
+                if (prevNewRightEdge > w.x) {
+                  pushForThisWidget = prevNewRightEdge - w.x;
+                } else {
+                  // Previous widget doesn't reach us - we DON'T MOVE
+                  pushForThisWidget = 0;
+                }
+              }
+
+              // Calculate gap after this widget (to next widget or viewport)
+              const wRightEdge = w.x + w.w;
+              const nextEdge = nextWidget ? nextWidget.x : GRID_CONFIG.cols;
+              const gapAfter = nextEdge - wRightEdge;
+
+              console.log(`Widget ${w.id.slice(-8)}: x=${w.x}, w=${w.w}, gapAfter=${gapAfter}, pushNeeded=${pushForThisWidget}`);
+
+              if (pushForThisWidget <= 0) {
+                // No push needed, stay in place
+                newPositions.set(w.id, w.x);
+                console.log(`  -> stays at x=${w.x} (no push needed)`);
+              } else {
+                // Move by push amount, but clamp to viewport
+                const maxMove = GRID_CONFIG.cols - w.w - w.x; // Max we can move right
+                const actualMove = Math.min(pushForThisWidget, maxMove);
+                const newX = w.x + actualMove;
+                newPositions.set(w.id, newX);
+                console.log(`  -> moves to x=${newX} (moved ${actualMove})`);
+              }
+            }
+
+            console.log('=== END CASCADING CALC ===');
+          } else {
+            // West resize - similar but reversed
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => b.x - a.x);
+
+            for (let i = 0; i < sortedWidgets.length; i++) {
+              const w = sortedWidgets[i];
+
+              let pushForThisWidget: number;
+
+              if (i === 0) {
+                pushForThisWidget = actualPush;
+              } else {
+                const prevWidget = sortedWidgets[i - 1];
+                const prevNewX = newPositions.get(prevWidget.id) ?? prevWidget.x;
+                const wRightEdge = w.x + w.w;
+
+                // If previous widget's new left edge < this widget's right edge
+                if (prevNewX < wRightEdge) {
+                  pushForThisWidget = wRightEdge - prevNewX;
+                } else {
+                  pushForThisWidget = 0;
+                }
+              }
+
+              if (pushForThisWidget <= 0) {
+                newPositions.set(w.id, w.x);
+              } else {
+                const newX = Math.max(w.x - pushForThisWidget, 0);
+                newPositions.set(w.id, newX);
+              }
+            }
+          }
+        }
+
+        // CRITICAL FIX: Check if pushed widgets would vertically overlap with non-chain widgets
+        let adjustedActualPush = actualPush;
+        let adjustedFinalW = finalW;
+        let adjustedFinalX = finalX;
+
+        if (actualPush > 0) {
+          for (const pushedWidget of widgetsToPush) {
+            const pushedNewX = isEastResize
+              ? pushedWidget.x + actualPush
+              : pushedWidget.x - actualPush;
+            const clampedPushedX = isEastResize
+              ? Math.min(pushedNewX, GRID_CONFIG.cols - pushedWidget.w)
+              : Math.max(0, pushedNewX);
+
+            for (const nonChain of nonChainWidgets) {
+              const pushedLeftEdge = clampedPushedX;
+              const pushedRightEdge = clampedPushedX + pushedWidget.w;
+              const nonChainLeftEdge = nonChain.x;
+              const nonChainRightEdge = nonChain.x + nonChain.w;
+
+              const hasHorizontalOverlap = !(pushedRightEdge <= nonChainLeftEdge || pushedLeftEdge >= nonChainRightEdge);
+              const pushedTop = pushedWidget.y;
+              const pushedBottom = pushedWidget.y + pushedWidget.h;
+              const nonChainTop = nonChain.y;
+              const nonChainBottom = nonChain.y + nonChain.h;
+              const hasVertOverlap = !(pushedBottom <= nonChainTop || pushedTop >= nonChainBottom);
+
+              if (hasHorizontalOverlap && hasVertOverlap) {
+                const spaceBelow = maxRows - nonChainBottom;
+                if (spaceBelow <= 0) {
+                  if (isEastResize) {
+                    const maxPushedX = nonChainLeftEdge - pushedWidget.w;
+                    const maxPush = Math.max(0, maxPushedX - pushedWidget.x);
+                    if (maxPush < adjustedActualPush) {
+                      adjustedActualPush = maxPush;
+                      adjustedFinalW = resizingLayout.w + gapFill + adjustedActualPush;
+                    }
+                  } else {
+                    const maxPushedX = nonChainRightEdge;
+                    const maxPush = Math.max(0, pushedWidget.x - maxPushedX);
+                    if (maxPush < adjustedActualPush) {
+                      adjustedActualPush = maxPush;
+                      adjustedFinalW = resizingLayout.w + gapFill + adjustedActualPush;
+                      adjustedFinalX = resizingLayout.x + resizingLayout.w - adjustedFinalW;
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Also check resizing widget itself
           const resizingNewRightEdge = isWestResize ? resizingLayout.x + resizingLayout.w : resizingLayout.x + adjustedFinalW;
           const resizingNewLeftEdge = isWestResize ? adjustedFinalX : resizingLayout.x;
 
           for (const nonChain of nonChainWidgets) {
             const hasHorizontalOverlap = !(resizingNewRightEdge <= nonChain.x || resizingNewLeftEdge >= nonChain.x + nonChain.w);
-            const hasVerticalOverlap = hasVerticalOverlapBetween(resizingLayout, nonChain);
+            const hasVertOverlap = hasVerticalOverlapBetween(resizingLayout, nonChain);
 
-            if (hasHorizontalOverlap && hasVerticalOverlap) {
+            if (hasHorizontalOverlap && hasVertOverlap) {
               const spaceBelow = maxRows - (nonChain.y + nonChain.h);
               if (spaceBelow <= 0) {
-                // Limit expansion to not overlap with this widget
                 if (isEastResize) {
                   const maxW = nonChain.x - resizingLayout.x;
                   if (maxW < adjustedFinalW) {
                     adjustedFinalW = Math.max(resizingLayout.w, maxW);
-                    adjustedExpansion = adjustedFinalW - resizingLayout.w;
+                    adjustedActualPush = Math.max(0, adjustedFinalW - resizingLayout.w - gapFill);
                   }
                 } else {
                   const maxX = nonChain.x + nonChain.w;
                   if (maxX > adjustedFinalX) {
                     adjustedFinalX = maxX;
                     adjustedFinalW = resizingLayout.x + resizingLayout.w - adjustedFinalX;
-                    adjustedExpansion = adjustedFinalW - resizingLayout.w;
+                    adjustedActualPush = Math.max(0, adjustedFinalW - resizingLayout.w - gapFill);
                   }
                 }
               }
@@ -1129,25 +1303,130 @@ export const DashboardLayout: React.FC = () => {
           }
         }
 
-        // Recalculate pushed widget positions with adjusted expansion
+        // Recalculate pushed widget positions with adjusted push using CASCADING logic
+        // IMPORTANT: For horizontal resize, widgets that are vertically stacked (no vertical overlap)
+        // should NOT cascade into each other - they should all be pushed by the same amount
         const adjustedPositions: Map<string, number> = new Map();
-        if (adjustedExpansion > 0) {
+        if (adjustedActualPush > 0) {
           if (isEastResize) {
-            for (const w of widgetsToPush) {
-              const newX = w.x + adjustedExpansion;
-              const clampedX = Math.min(newX, GRID_CONFIG.cols - w.w);
-              adjustedPositions.set(w.id, clampedX);
+            // Sort widgets left to right for cascading calculation
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => a.x - b.x);
+
+            console.log('=== ADJUSTED CASCADING CALC ===');
+            console.log('Adjusted actual push:', adjustedActualPush);
+
+            for (let i = 0; i < sortedWidgets.length; i++) {
+              const w = sortedWidgets[i];
+
+              // Find the widget that would actually push this widget
+              // It must be: to the left of this widget AND have vertical overlap with this widget
+              let pushForThisWidget = adjustedActualPush; // Default: pushed by resizing widget
+
+              // Check if any already-processed widget is to the left AND has vertical overlap
+              // If so, use cascading logic from that widget
+              let pushedByWidget: typeof w | null = null;
+              let maxPushFromChain = 0;
+
+              for (let j = 0; j < i; j++) {
+                const prevWidget = sortedWidgets[j];
+                const prevNewX = adjustedPositions.get(prevWidget.id) ?? prevWidget.x;
+                const prevNewRightEdge = prevNewX + prevWidget.w;
+
+                // Check if prevWidget has vertical overlap with current widget
+                const hasVertOverlap = !(prevWidget.y + prevWidget.h <= w.y || prevWidget.y >= w.y + w.h);
+
+                // Check if prevWidget is actually to the left (before pushing) AND its new right edge reaches us
+                if (hasVertOverlap && prevWidget.x + prevWidget.w <= w.x) {
+                  // This widget could cascade push us
+                  if (prevNewRightEdge > w.x) {
+                    const cascadePush = prevNewRightEdge - w.x;
+                    if (cascadePush > maxPushFromChain) {
+                      maxPushFromChain = cascadePush;
+                      pushedByWidget = prevWidget;
+                    }
+                  }
+                }
+              }
+
+              // If we found a widget that cascades into us, use that push
+              // Otherwise, check if resizing widget directly pushes us
+              if (pushedByWidget && maxPushFromChain > 0) {
+                pushForThisWidget = maxPushFromChain;
+                console.log(`  Widget ${w.id.slice(-8)}: cascaded from ${pushedByWidget.id.slice(-8)}, push=${pushForThisWidget}`);
+              } else {
+                // Check if resizing widget's new right edge reaches us
+                const resizingNewRightEdge = resizingLayout.x + adjustedFinalW;
+                if (resizingNewRightEdge > w.x) {
+                  pushForThisWidget = resizingNewRightEdge - w.x;
+                  console.log(`  Widget ${w.id.slice(-8)}: pushed by resizing widget, push=${pushForThisWidget}`);
+                } else {
+                  pushForThisWidget = 0;
+                  console.log(`  Widget ${w.id.slice(-8)}: no push needed (gap exists)`);
+                }
+              }
+
+              if (pushForThisWidget <= 0) {
+                adjustedPositions.set(w.id, w.x);
+                console.log(`  Widget ${w.id.slice(-8)}: stays at x=${w.x}`);
+              } else {
+                const maxMove = GRID_CONFIG.cols - w.w - w.x;
+                const actualMove = Math.min(pushForThisWidget, maxMove);
+                const newX = w.x + actualMove;
+                adjustedPositions.set(w.id, newX);
+                console.log(`  Widget ${w.id.slice(-8)}: moves to x=${newX} (push=${pushForThisWidget}, actualMove=${actualMove})`);
+              }
             }
+            console.log('=== END ADJUSTED CASCADING ===');
           } else {
-            for (const w of widgetsToPush) {
-              const newX = w.x - adjustedExpansion;
-              const clampedX = Math.max(0, newX);
-              adjustedPositions.set(w.id, clampedX);
+            // West resize - cascading from right to left with vertical overlap check
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => b.x - a.x);
+
+            for (let i = 0; i < sortedWidgets.length; i++) {
+              const w = sortedWidgets[i];
+
+              let pushForThisWidget = adjustedActualPush;
+              let maxPushFromChain = 0;
+
+              for (let j = 0; j < i; j++) {
+                const prevWidget = sortedWidgets[j];
+                const prevNewX = adjustedPositions.get(prevWidget.id) ?? prevWidget.x;
+
+                const hasVertOverlap = !(prevWidget.y + prevWidget.h <= w.y || prevWidget.y >= w.y + w.h);
+                const wRightEdge = w.x + w.w;
+
+                if (hasVertOverlap && prevWidget.x >= wRightEdge) {
+                  if (prevNewX < wRightEdge) {
+                    const cascadePush = wRightEdge - prevNewX;
+                    if (cascadePush > maxPushFromChain) {
+                      maxPushFromChain = cascadePush;
+                    }
+                  }
+                }
+              }
+
+              if (maxPushFromChain > 0) {
+                pushForThisWidget = maxPushFromChain;
+              } else {
+                const resizingNewLeftEdge = adjustedFinalX;
+                const wRightEdge = w.x + w.w;
+                if (resizingNewLeftEdge < wRightEdge) {
+                  pushForThisWidget = wRightEdge - resizingNewLeftEdge;
+                } else {
+                  pushForThisWidget = 0;
+                }
+              }
+
+              if (pushForThisWidget <= 0) {
+                adjustedPositions.set(w.id, w.x);
+              } else {
+                const newX = Math.max(w.x - pushForThisWidget, 0);
+                adjustedPositions.set(w.id, newX);
+              }
             }
           }
         }
 
-        // Apply DOM updates with adjusted values
+        // Apply DOM updates
         resizeWidgetDom(resizingWidgetIdRef.current, adjustedFinalW, resizingLayout.h);
         if (isWestResize) {
           moveWidgetDom(resizingWidgetIdRef.current, adjustedFinalX, resizingLayout.y);
@@ -1158,7 +1437,6 @@ export const DashboardLayout: React.FC = () => {
         for (const w of widgetsToPush) {
           const newX = adjustedPositions.get(w.id) ?? w.x;
           if (newX !== w.x) {
-            // IMPORTANT: Preserve original Y position
             moveWidgetDom(w.id, newX, w.y);
             movedWidgetIds.push(w.id);
           }
@@ -1171,7 +1449,7 @@ export const DashboardLayout: React.FC = () => {
           }
           const newX = adjustedPositions.get(l.i);
           if (newX !== undefined) {
-            return { ...l, x: newX, y: l.y, h: l.h }; // Preserve Y and H
+            return { ...l, x: newX, y: l.y, h: l.h };
           }
           return { ...l };
         });
@@ -1199,235 +1477,1292 @@ export const DashboardLayout: React.FC = () => {
         return;
       }
 
-      // VERTICAL PUSH HANDLING (south/north)
+      // VERTICAL PUSH HANDLING (south/north) - GAP FILL FIRST, THEN PUSH
       if (handleVertical && !handleHorizontal) {
         const effectiveDeltaY = isSouthResize ? gridDeltaY : -gridDeltaY;
+        const minH = resizingLayout.minH ?? 3;
 
-        // If not expanding, reset and return
-        if ((isSouthResize && gridDeltaY <= 0) || (isNorthResize && gridDeltaY >= 0)) {
-          if (lastPushedLayoutRef.current) {
-            for (const l of baseLayouts) {
-              if (l.i !== resizingWidgetIdRef.current) {
-                moveWidgetDom(l.i, l.x, l.y);
-              }
-            }
-            setResizePreview(null);
-            lastPushedLayoutRef.current = null;
+        // If shrinking, dependent widgets should return to original position (not follow)
+        if (effectiveDeltaY <= 0) {
+          const limitedH = Math.max(minH, resizingLayout.h + effectiveDeltaY);
+          const limitedY = isNorthResize
+            ? resizingLayout.y + resizingLayout.h - limitedH
+            : resizingLayout.y;
+
+          resizeWidgetDom(resizingWidgetIdRef.current, resizingLayout.w, limitedH);
+          if (isNorthResize) {
+            moveWidgetDom(resizingWidgetIdRef.current, resizingLayout.x, limitedY);
           }
+
+          // Reset all dependent widgets to their ORIGINAL positions from baseLayouts
+          for (const l of baseLayouts) {
+            if (l.i !== resizingWidgetIdRef.current) {
+              moveWidgetDom(l.i, l.x, l.y);
+            }
+          }
+
+          // Build new layouts with resizing widget at new size, others at original positions
+          const newLayouts = baseLayouts.map(l => {
+            if (l.i === resizingWidgetIdRef.current) {
+              return { ...l, y: limitedY, h: limitedH };
+            }
+            return l;
+          });
+
+          setResizePreview({ newLayouts, movedWidgets: [], shrunkWidgets: [] });
+          lastPushedLayoutRef.current = newLayouts;
           return;
         }
 
-        const requestedH = resizingLayout.h + effectiveDeltaY;
-        const requestedY = isNorthResize ? Math.max(0, resizingLayout.y - effectiveDeltaY) : resizingLayout.y;
-        const newBottomEdge = requestedY + requestedH;
-        const newTopEdge = requestedY;
-
-        // Check viewport bounds
-        if (newBottomEdge > maxRows || newTopEdge < 0) return;
-
-        // Collect widgets that could be affected (have horizontal overlap)
-        const potentialWidgets: Array<{ id: string; origY: number; h: number; x: number; w: number }> = [];
-        let hasCollision = false;
+        // Expanding - GAP FILL FIRST, THEN PUSH widgets until they hit viewport edge
         const originalBottomEdge = resizingLayout.y + resizingLayout.h;
         const originalTopEdge = resizingLayout.y;
 
-        // Also track non-chain widgets (widgets that won't be pushed but could block)
-        const nonChainWidgets: Array<{ id: string; x: number; y: number; w: number; h: number }> = [];
+        // Helper function to check horizontal overlap with resizing widget
+        const hasHorizontalOverlap = (widget: { x: number; w: number }) => {
+          return !(widget.x >= resizingLayout.x + resizingLayout.w || widget.x + widget.w <= resizingLayout.x);
+        };
 
-        for (const l of baseLayouts) {
-          if (l.i === resizingWidgetIdRef.current) continue;
-          const hasHorizontalOverlap = !(l.x >= resizingLayout.x + resizingLayout.w || l.x + l.w <= resizingLayout.x);
+        // Helper function to check if two widgets have horizontal overlap
+        const hasHorizontalOverlapBetween = (w1: { x: number; w: number }, w2: { x: number; w: number }) => {
+          return !(w1.x + w1.w <= w2.x || w1.x >= w2.x + w2.w);
+        };
 
-          if (hasHorizontalOverlap) {
-            if (isSouthResize && l.y >= originalBottomEdge) {
-              potentialWidgets.push({ id: l.i, origY: l.y, h: l.h, x: l.x, w: l.w });
-              if (newBottomEdge > l.y && newBottomEdge > originalBottomEdge) hasCollision = true;
-            } else if (isNorthResize && l.y + l.h <= originalTopEdge) {
-              potentialWidgets.push({ id: l.i, origY: l.y, h: l.h, x: l.x, w: l.w });
-              if (newTopEdge < l.y + l.h && newTopEdge < originalTopEdge) hasCollision = true;
-            } else {
-              // Widget has horizontal overlap but is not in the push direction
-              nonChainWidgets.push({ id: l.i, x: l.x, y: l.y, w: l.w, h: l.h });
-            }
+        // Get all other widgets
+        const allWidgets = baseLayouts
+          .filter(l => l.i !== resizingWidgetIdRef.current)
+          .map(l => ({ id: l.i, x: l.x, y: l.y, w: l.w, h: l.h }));
+
+        // Find widgets that have horizontal overlap (potential push targets)
+        const widgetsWithOverlap = allWidgets.filter(w => hasHorizontalOverlap(w));
+
+        // Find the FIRST widget in the resize direction (closest to resizing widget)
+        let gapToFirstWidget = 0;
+        let firstWidgetEdge = isSouthResize ? maxRows : 0;
+
+        if (isSouthResize) {
+          // Find widgets BELOW resizing widget
+          const widgetsBelow = widgetsWithOverlap.filter(w => w.y >= originalBottomEdge);
+          if (widgetsBelow.length > 0) {
+            // Sort by Y position (closest first)
+            widgetsBelow.sort((a, b) => a.y - b.y);
+            firstWidgetEdge = widgetsBelow[0].y;
+            gapToFirstWidget = firstWidgetEdge - originalBottomEdge;
           } else {
-            // Widget has no horizontal overlap with resizing widget
-            nonChainWidgets.push({ id: l.i, x: l.x, y: l.y, w: l.w, h: l.h });
+            // No widgets below, gap is to viewport edge
+            gapToFirstWidget = maxRows - originalBottomEdge;
+          }
+        } else {
+          // North resize - find widgets ABOVE resizing widget
+          const widgetsAbove = widgetsWithOverlap.filter(w => w.y + w.h <= originalTopEdge);
+          if (widgetsAbove.length > 0) {
+            // Sort by bottom edge (closest first = highest bottom edge)
+            widgetsAbove.sort((a, b) => (b.y + b.h) - (a.y + a.h));
+            firstWidgetEdge = widgetsAbove[0].y + widgetsAbove[0].h;
+            gapToFirstWidget = originalTopEdge - firstWidgetEdge;
+          } else {
+            // No widgets above, gap is to viewport edge (y=0)
+            gapToFirstWidget = originalTopEdge;
           }
         }
 
-        if (!hasCollision) {
-          if (lastPushedLayoutRef.current) {
-            for (const l of baseLayouts) {
-              if (l.i !== resizingWidgetIdRef.current) {
-                moveWidgetDom(l.i, l.x, l.y);
+        // Calculate how much of the expansion goes into the gap vs pushing
+        const expansion = effectiveDeltaY;
+        const gapFill = Math.min(expansion, gapToFirstWidget);
+        const pushAmount = Math.max(0, expansion - gapToFirstWidget);
+
+        console.log('=== VERTICAL GAP FILL LOGIC ===');
+        console.log('Original edge:', isSouthResize ? originalBottomEdge : originalTopEdge);
+        console.log('First widget edge:', firstWidgetEdge);
+        console.log('Gap to first widget:', gapToFirstWidget);
+        console.log('Total expansion requested:', expansion);
+        console.log('Gap fill:', gapFill);
+        console.log('Push amount:', pushAmount);
+        console.log('===============================');
+
+        // Build the list of ALL widgets that need to be pushed using BFS CHAIN DETECTION
+        let widgetsToPush: Array<{ id: string; x: number; y: number; w: number; h: number }> = [];
+
+        if (isSouthResize) {
+          // Get ALL widgets below resizing widget
+          const widgetsBelow = allWidgets
+            .filter(w => w.y >= originalBottomEdge)
+            .sort((a, b) => a.y - b.y);
+
+          console.log('=== SOUTH RESIZE VERTICAL DEBUG ===');
+          console.log('Resizing widget bottom edge:', originalBottomEdge);
+          console.log('All widgets below:', widgetsBelow.length);
+          widgetsBelow.forEach(w => {
+            const overlap = hasHorizontalOverlap(w);
+            console.log(`  Widget ${w.id.slice(-8)}: y=${w.y}, x=${w.x}, w=${w.w}, h=${w.h}, horizontalOverlap=${overlap}`);
+          });
+
+          // Start with widgets that have direct horizontal overlap with resizing widget
+          const directPushWidgets = widgetsBelow.filter(w => hasHorizontalOverlap(w));
+          console.log('Direct push widgets (horizontal overlap with resizing):', directPushWidgets.length);
+
+          // Chain reaction - BFS to find all connected widgets
+          const pushedSet = new Set<string>();
+          const queue = [...directPushWidgets];
+
+          while (queue.length > 0) {
+            const current = queue.shift()!;
+            if (pushedSet.has(current.id)) continue;
+            pushedSet.add(current.id);
+            widgetsToPush.push(current);
+            console.log(`Added to vertical push: ${current.id.slice(-8)} at y=${current.y}`);
+
+            // Find ALL widgets below current that have horizontal overlap with current
+            const currentBottomEdge = current.y + current.h;
+            console.log(`  Looking for widgets below ${current.id.slice(-8)}, bottomEdge=${currentBottomEdge}`);
+
+            for (const other of widgetsBelow) {
+              if (pushedSet.has(other.id)) continue;
+
+              // Check if other is below current
+              const isBelow = other.y >= currentBottomEdge;
+              // Check horizontal overlap with current widget
+              const hasOverlap = !(current.x + current.w <= other.x || current.x >= other.x + other.w);
+
+              console.log(`    Checking ${other.id.slice(-8)}: y=${other.y}, isBelow=${isBelow}, hasHorizontalOverlap=${hasOverlap}`);
+
+              if (isBelow && hasOverlap) {
+                console.log(`    -> Adding to queue!`);
+                queue.push(other);
               }
             }
-            setResizePreview(null);
-            lastPushedLayoutRef.current = null;
+          }
+
+          widgetsToPush.sort((a, b) => a.y - b.y); // Sort top to bottom
+          console.log('=== END SOUTH RESIZE DEBUG ===');
+        } else {
+          // North resize - similar logic but upward
+          const widgetsAbove = allWidgets
+            .filter(w => w.y + w.h <= originalTopEdge)
+            .sort((a, b) => b.y - a.y);
+
+          const directPushWidgets = widgetsAbove.filter(w => hasHorizontalOverlap(w));
+          const pushedSet = new Set<string>();
+          const queue = [...directPushWidgets];
+
+          while (queue.length > 0) {
+            const current = queue.shift()!;
+            if (pushedSet.has(current.id)) continue;
+            pushedSet.add(current.id);
+            widgetsToPush.push(current);
+
+            const currentTopEdge = current.y;
+            for (const other of widgetsAbove) {
+              if (pushedSet.has(other.id)) continue;
+              if (other.y + other.h > currentTopEdge) continue;
+
+              const hasOverlap = !(current.x + current.w <= other.x || current.x >= other.x + other.w);
+              if (hasOverlap) {
+                queue.push(other);
+              }
+            }
+          }
+
+          widgetsToPush.sort((a, b) => b.y - a.y); // Sort bottom to top
+        }
+
+        console.log('=== VERTICAL WIDGETS TO PUSH ===');
+        console.log('Total widgets with direct overlap:', widgetsWithOverlap.length);
+        console.log('Widgets to push (chain):', widgetsToPush.length);
+        widgetsToPush.forEach(w => console.log(`  - ${w.id.slice(-8)}: y=${w.y}, h=${w.h}`));
+        console.log('================================');
+
+        // Find widgets NOT in the chain
+        const chainIds = new Set(widgetsToPush.map(w => w.id));
+        const nonChainWidgets = allWidgets.filter(w => !chainIds.has(w.id));
+
+        // Calculate available space for pushing (INCLUDING GAPS BETWEEN WIDGETS)
+        let availablePushSpace = 0;
+
+        if (pushAmount > 0 && widgetsToPush.length > 0) {
+          if (isSouthResize) {
+            // Sort widgets top to bottom
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => a.y - b.y);
+
+            // Calculate total gaps between widgets in the chain
+            let totalGaps = 0;
+            for (let i = 0; i < sortedWidgets.length - 1; i++) {
+              const currentBottomEdge = sortedWidgets[i].y + sortedWidgets[i].h;
+              const nextTopEdge = sortedWidgets[i + 1].y;
+              const gap = nextTopEdge - currentBottomEdge;
+              console.log(`Vertical gap between widget ${i} (bottom=${currentBottomEdge}) and widget ${i+1} (top=${nextTopEdge}): ${gap}`);
+              if (gap > 0) {
+                totalGaps += gap;
+              }
+            }
+
+            const bottommostEdge = Math.max(...widgetsToPush.map(w => w.y + w.h));
+            let blockingEdge = maxRows;
+
+            for (const nonChain of nonChainWidgets) {
+              const hasOverlapWithChain = widgetsToPush.some(chainWidget =>
+                hasHorizontalOverlapBetween(chainWidget, nonChain)
+              );
+              if (hasOverlapWithChain && nonChain.y >= bottommostEdge) {
+                blockingEdge = Math.min(blockingEdge, nonChain.y);
+              }
+            }
+            const spaceAtEnd = blockingEdge - bottommostEdge;
+            availablePushSpace = totalGaps + spaceAtEnd;
+
+            console.log('=== VERTICAL AVAILABLE SPACE ===');
+            console.log('Total gaps between widgets:', totalGaps);
+            console.log('Space at end (viewport - bottommost):', spaceAtEnd);
+            console.log('Total available push space:', availablePushSpace);
+            console.log('================================');
+          } else {
+            // North resize - sort bottom to top
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => b.y - a.y);
+
+            let totalGaps = 0;
+            for (let i = 0; i < sortedWidgets.length - 1; i++) {
+              const currentTopEdge = sortedWidgets[i].y;
+              const nextBottomEdge = sortedWidgets[i + 1].y + sortedWidgets[i + 1].h;
+              const gap = currentTopEdge - nextBottomEdge;
+              if (gap > 0) {
+                totalGaps += gap;
+              }
+            }
+
+            const topmostEdge = Math.min(...widgetsToPush.map(w => w.y));
+            let blockingEdge = 0;
+
+            for (const nonChain of nonChainWidgets) {
+              const hasOverlapWithChain = widgetsToPush.some(chainWidget =>
+                hasHorizontalOverlapBetween(chainWidget, nonChain)
+              );
+              if (hasOverlapWithChain && nonChain.y + nonChain.h <= topmostEdge) {
+                blockingEdge = Math.max(blockingEdge, nonChain.y + nonChain.h);
+              }
+            }
+            const spaceAtEnd = topmostEdge - blockingEdge;
+            availablePushSpace = totalGaps + spaceAtEnd;
+          }
+        }
+
+        // Calculate actual push (limited by available space)
+        const actualPush = Math.min(pushAmount, availablePushSpace);
+        const totalExpansion = gapFill + actualPush;
+
+        // Calculate final dimensions
+        const finalH = Math.max(minH, resizingLayout.h + totalExpansion);
+        const finalY = isNorthResize
+          ? resizingLayout.y + resizingLayout.h - finalH
+          : resizingLayout.y;
+
+        // Check viewport bounds
+        if ((isSouthResize && finalY + finalH > maxRows) || (isNorthResize && finalY < 0)) {
+          return;
+        }
+
+        console.log('=== VERTICAL FINAL CALCULATION ===');
+        console.log('Available push space:', availablePushSpace);
+        console.log('Actual push:', actualPush);
+        console.log('Total expansion:', totalExpansion);
+        console.log('Final H:', finalH);
+        console.log('==================================');
+
+        // Calculate new positions for pushed widgets
+        const newPositions: Map<string, number> = new Map();
+
+        if (actualPush > 0) {
+          if (isSouthResize) {
+            for (const w of widgetsToPush) {
+              const newY = w.y + actualPush;
+              const clampedY = Math.min(newY, maxRows - w.h);
+              newPositions.set(w.id, clampedY);
+            }
+          } else {
+            for (const w of widgetsToPush) {
+              const newY = w.y - actualPush;
+              const clampedY = Math.max(0, newY);
+              newPositions.set(w.id, clampedY);
+            }
+          }
+        }
+
+        // Check for collisions with non-chain widgets
+        let adjustedActualPush = actualPush;
+        let adjustedFinalH = finalH;
+        let adjustedFinalY = finalY;
+
+        if (actualPush > 0) {
+          for (const pushedWidget of widgetsToPush) {
+            const pushedNewY = isSouthResize
+              ? pushedWidget.y + actualPush
+              : pushedWidget.y - actualPush;
+            const clampedPushedY = isSouthResize
+              ? Math.min(pushedNewY, maxRows - pushedWidget.h)
+              : Math.max(0, pushedNewY);
+
+            for (const nonChain of nonChainWidgets) {
+              const hasHorzOverlap = hasHorizontalOverlapBetween(pushedWidget, nonChain);
+              const pushedTop = clampedPushedY;
+              const pushedBottom = clampedPushedY + pushedWidget.h;
+              const nonChainTop = nonChain.y;
+              const nonChainBottom = nonChain.y + nonChain.h;
+              const hasVertOverlap = !(pushedBottom <= nonChainTop || pushedTop >= nonChainBottom);
+
+              if (hasHorzOverlap && hasVertOverlap) {
+                const spaceRight = GRID_CONFIG.cols - (nonChain.x + nonChain.w);
+                if (spaceRight <= 0) {
+                  if (isSouthResize) {
+                    const maxPushedY = nonChainTop - pushedWidget.h;
+                    const maxPush = Math.max(0, maxPushedY - pushedWidget.y);
+                    if (maxPush < adjustedActualPush) {
+                      adjustedActualPush = maxPush;
+                      adjustedFinalH = resizingLayout.h + gapFill + adjustedActualPush;
+                    }
+                  } else {
+                    const maxPushedY = nonChainBottom;
+                    const maxPush = Math.max(0, pushedWidget.y - maxPushedY);
+                    if (maxPush < adjustedActualPush) {
+                      adjustedActualPush = maxPush;
+                      adjustedFinalH = resizingLayout.h + gapFill + adjustedActualPush;
+                      adjustedFinalY = resizingLayout.y + resizingLayout.h - adjustedFinalH;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Recalculate pushed widget positions with adjusted push using CASCADING logic
+        // IMPORTANT: For vertical resize, widgets that are horizontally stacked (no horizontal overlap)
+        // should NOT cascade into each other - they should all be pushed by the same amount
+        const adjustedPositions: Map<string, number> = new Map();
+        if (adjustedActualPush > 0) {
+          if (isSouthResize) {
+            // Sort widgets top to bottom for cascading calculation
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => a.y - b.y);
+
+            console.log('=== VERTICAL ADJUSTED CASCADING CALC ===');
+            console.log('Adjusted actual push:', adjustedActualPush);
+
+            for (let i = 0; i < sortedWidgets.length; i++) {
+              const w = sortedWidgets[i];
+
+              // Find the widget that would actually push this widget
+              // It must be: above this widget AND have horizontal overlap with this widget
+              let pushForThisWidget = adjustedActualPush; // Default: pushed by resizing widget
+
+              // Check if any already-processed widget is above AND has horizontal overlap
+              let pushedByWidget: typeof w | null = null;
+              let maxPushFromChain = 0;
+
+              for (let j = 0; j < i; j++) {
+                const prevWidget = sortedWidgets[j];
+                const prevNewY = adjustedPositions.get(prevWidget.id) ?? prevWidget.y;
+                const prevNewBottomEdge = prevNewY + prevWidget.h;
+
+                // Check if prevWidget has horizontal overlap with current widget
+                const hasHorzOverlap = !(prevWidget.x + prevWidget.w <= w.x || prevWidget.x >= w.x + w.w);
+
+                // Check if prevWidget is actually above (before pushing) AND its new bottom edge reaches us
+                if (hasHorzOverlap && prevWidget.y + prevWidget.h <= w.y) {
+                  if (prevNewBottomEdge > w.y) {
+                    const cascadePush = prevNewBottomEdge - w.y;
+                    if (cascadePush > maxPushFromChain) {
+                      maxPushFromChain = cascadePush;
+                      pushedByWidget = prevWidget;
+                    }
+                  }
+                }
+              }
+
+              // If we found a widget that cascades into us, use that push
+              // Otherwise, check if resizing widget directly pushes us
+              if (pushedByWidget && maxPushFromChain > 0) {
+                pushForThisWidget = maxPushFromChain;
+                console.log(`  Widget ${w.id.slice(-8)}: cascaded from ${pushedByWidget.id.slice(-8)}, push=${pushForThisWidget}`);
+              } else {
+                // Check if resizing widget's new bottom edge reaches us
+                const resizingNewBottomEdge = resizingLayout.y + adjustedFinalH;
+                if (resizingNewBottomEdge > w.y) {
+                  pushForThisWidget = resizingNewBottomEdge - w.y;
+                  console.log(`  Widget ${w.id.slice(-8)}: pushed by resizing widget, push=${pushForThisWidget}`);
+                } else {
+                  pushForThisWidget = 0;
+                  console.log(`  Widget ${w.id.slice(-8)}: no push needed (gap exists)`);
+                }
+              }
+
+              if (pushForThisWidget <= 0) {
+                adjustedPositions.set(w.id, w.y);
+                console.log(`  Widget ${w.id.slice(-8)}: stays at y=${w.y}`);
+              } else {
+                const maxMove = maxRows - w.h - w.y;
+                const actualMove = Math.min(pushForThisWidget, maxMove);
+                const newY = w.y + actualMove;
+                adjustedPositions.set(w.id, newY);
+                console.log(`  Widget ${w.id.slice(-8)}: moves to y=${newY} (push=${pushForThisWidget}, actualMove=${actualMove})`);
+              }
+            }
+            console.log('=== END VERTICAL CASCADING ===');
+          } else {
+            // North resize - cascading from bottom to top with horizontal overlap check
+            const sortedWidgets = [...widgetsToPush].sort((a, b) => b.y - a.y);
+
+            for (let i = 0; i < sortedWidgets.length; i++) {
+              const w = sortedWidgets[i];
+
+              let pushForThisWidget = adjustedActualPush;
+              let maxPushFromChain = 0;
+
+              for (let j = 0; j < i; j++) {
+                const prevWidget = sortedWidgets[j];
+                const prevNewY = adjustedPositions.get(prevWidget.id) ?? prevWidget.y;
+
+                const hasHorzOverlap = !(prevWidget.x + prevWidget.w <= w.x || prevWidget.x >= w.x + w.w);
+                const wBottomEdge = w.y + w.h;
+
+                if (hasHorzOverlap && prevWidget.y >= wBottomEdge) {
+                  if (prevNewY < wBottomEdge) {
+                    const cascadePush = wBottomEdge - prevNewY;
+                    if (cascadePush > maxPushFromChain) {
+                      maxPushFromChain = cascadePush;
+                    }
+                  }
+                }
+              }
+
+              if (maxPushFromChain > 0) {
+                pushForThisWidget = maxPushFromChain;
+              } else {
+                const resizingNewTopEdge = adjustedFinalY;
+                const wBottomEdge = w.y + w.h;
+                if (resizingNewTopEdge < wBottomEdge) {
+                  pushForThisWidget = wBottomEdge - resizingNewTopEdge;
+                } else {
+                  pushForThisWidget = 0;
+                }
+              }
+
+              if (pushForThisWidget <= 0) {
+                adjustedPositions.set(w.id, w.y);
+              } else {
+                const newY = Math.max(w.y - pushForThisWidget, 0);
+                adjustedPositions.set(w.id, newY);
+              }
+            }
+          }
+        }
+
+        // Apply DOM updates
+        resizeWidgetDom(resizingWidgetIdRef.current, resizingLayout.w, adjustedFinalH);
+        if (isNorthResize) {
+          moveWidgetDom(resizingWidgetIdRef.current, resizingLayout.x, adjustedFinalY);
+        }
+
+        // Move pushed widgets
+        const movedWidgetIds: string[] = [];
+        for (const w of widgetsToPush) {
+          const newY = adjustedPositions.get(w.id) ?? w.y;
+          if (newY !== w.y) {
+            moveWidgetDom(w.id, w.x, newY);
+            movedWidgetIds.push(w.id);
+          }
+        }
+
+        // Update preview - preserve X position for ALL widgets
+        const newLayouts = baseLayouts.map(l => {
+          if (l.i === resizingWidgetIdRef.current) {
+            return { ...l, y: adjustedFinalY, h: adjustedFinalH, x: resizingLayout.x, w: resizingLayout.w };
+          }
+          const newY = adjustedPositions.get(l.i);
+          if (newY !== undefined) {
+            return { ...l, y: newY, x: l.x, w: l.w };
+          }
+          return { ...l };
+        });
+
+        // Validate: ensure no widget goes outside viewport
+        const hasInvalidPosition = newLayouts.some(layout =>
+          layout.x < 0 ||
+          layout.x + layout.w > GRID_CONFIG.cols ||
+          layout.y < 0 ||
+          layout.y + layout.h > maxRows
+        );
+
+        if (hasInvalidPosition) {
+          console.log('[DEBUG] Invalid vertical layout - reverting');
+          for (const l of baseLayouts) {
+            if (l.i !== resizingWidgetIdRef.current) {
+              moveWidgetDom(l.i, l.x, l.y);
+            }
           }
           return;
         }
 
-        // Calculate push positions
-        const newPositions: Map<string, number> = new Map();
-        let canPush = true;
-        let adjustedRequestedH = requestedH;
-        let adjustedRequestedY = requestedY;
+        setResizePreview({ newLayouts, movedWidgets: movedWidgetIds, shrunkWidgets: [] });
+        lastPushedLayoutRef.current = newLayouts;
+        return;
+      }
 
-        if (isSouthResize) {
-          // Sort top to bottom (closest first)
-          potentialWidgets.sort((a, b) => a.origY - b.origY);
-          let currentBottomEdge = newBottomEdge;
-          for (const widget of potentialWidgets) {
-            if (currentBottomEdge > widget.origY) {
-              const newY = currentBottomEdge;
-              if (newY + widget.h > maxRows) { canPush = false; break; }
-              newPositions.set(widget.id, newY);
-              currentBottomEdge = newY + widget.h;
-            } else {
-              newPositions.set(widget.id, widget.origY);
-              currentBottomEdge = widget.origY + widget.h;
+      // CORNER RESIZE HANDLING (se, sw, ne, nw) - Handle BOTH horizontal AND vertical simultaneously
+      if (handleHorizontal && handleVertical) {
+        console.log('=== CORNER RESIZE START ===');
+        console.log('Direction:', direction);
+
+        const effectiveDeltaX = isEastResize ? gridDeltaX : -gridDeltaX;
+        const effectiveDeltaY = isSouthResize ? gridDeltaY : -gridDeltaY;
+        const minW = resizingLayout.minW ?? 3;
+        const minH = resizingLayout.minH ?? 3;
+
+        // Calculate requested dimensions (from original size at resize start)
+        const requestedW = Math.max(minW, resizingLayout.w + effectiveDeltaX);
+        const requestedH = Math.max(minH, resizingLayout.h + effectiveDeltaY);
+
+        // Clamp to viewport (using let so we can further limit based on available push space)
+        let clampedW = Math.min(requestedW, isWestResize ? resizingLayout.x + resizingLayout.w : GRID_CONFIG.cols - resizingLayout.x);
+        let clampedH = Math.min(requestedH, isNorthResize ? resizingLayout.y + resizingLayout.h : maxRows - resizingLayout.y);
+        const clampedX = isWestResize ? resizingLayout.x + resizingLayout.w - clampedW : resizingLayout.x;
+        const clampedY = isNorthResize ? resizingLayout.y + resizingLayout.h - clampedH : resizingLayout.y;
+
+        console.log('Resizing widget:', resizingLayout.i, 'Original:', { x: resizingLayout.x, y: resizingLayout.y, w: resizingLayout.w, h: resizingLayout.h });
+        console.log('Clamped:', { x: clampedX, y: clampedY, w: clampedW, h: clampedH });
+        console.log('Expansion - horizontal:', clampedW - resizingLayout.w, 'vertical:', clampedH - resizingLayout.h);
+
+        // Helper functions
+        const hasVerticalOverlapBetween = (w1: { y: number; h: number }, w2: { y: number; h: number }) => {
+          return !(w1.y + w1.h <= w2.y || w1.y >= w2.y + w2.h);
+        };
+
+        const hasHorizontalOverlapBetween = (w1: { x: number; w: number }, w2: { x: number; w: number }) => {
+          return !(w1.x + w1.w <= w2.x || w1.x >= w2.x + w2.w);
+        };
+
+        // Get all other widgets from ORIGINAL positions (baseLayouts) - same as horizontal/vertical resize
+        // This ensures widgets don't accumulate incorrect positions during drag
+        const allWidgets = baseLayouts
+          .filter(l => l.i !== resizingWidgetIdRef.current)
+          .map(l => ({ id: l.i, x: l.x, y: l.y, w: l.w, h: l.h }));
+
+        // Calculate horizontal push with FULL CASCADING logic (same as horizontal-only resize)
+        // INCLUDING GAP FILL - first fill gap to first widget, then push
+        const horzPositions: Map<string, number> = new Map();
+        const resizingBoundsForHorz = { y: clampedY, h: clampedH };
+
+        // Use ORIGINAL edges (same as horizontal-only resize)
+        const originalRightEdge = resizingLayout.x + resizingLayout.w;
+        const originalLeftEdge = resizingLayout.x;
+
+        console.log('=== CORNER HORIZONTAL CHECK ===');
+        console.log('requestedW:', requestedW, 'resizingLayout.w:', resizingLayout.w);
+        console.log('Will process horizontal?', requestedW > resizingLayout.w);
+
+        // Check if user is REQUESTING horizontal expansion (use requestedW, not clampedW)
+        // This allows continuous resize - as user drags further, expansion keeps increasing
+        if (requestedW > resizingLayout.w) {
+          const horizontalExpansion = requestedW - resizingLayout.w;
+          console.log('=== CORNER HORIZONTAL PUSH ===');
+          console.log('Horizontal expansion:', horizontalExpansion);
+
+          // Collect ALL widgets to push using BFS chain detection
+          const widgetsToPushHorz: typeof allWidgets = [];
+
+          if (isEastResize) {
+            console.log('=== CORNER EAST RESIZE ===');
+            console.log('Current right edge:', originalRightEdge);
+            console.log('All widgets:', allWidgets.length);
+            allWidgets.forEach(w => console.log(`  Widget: ${w.id.slice(-8)}: x=${w.x}, y=${w.y}, w=${w.w}, h=${w.h}`));
+
+            const widgetsToRight = allWidgets
+              .filter(w => w.x >= originalRightEdge)
+              .sort((a, b) => a.x - b.x);
+
+            console.log('Widgets to right (x >= currentRightEdge):', widgetsToRight.length);
+            widgetsToRight.forEach(w => console.log(`  To right: ${w.id.slice(-8)}: x=${w.x}`));
+
+            // Find gap to first widget with vertical overlap
+            let gapToFirstWidget = GRID_CONFIG.cols - originalRightEdge;
+            console.log('resizingBoundsForHorz:', resizingBoundsForHorz);
+            const widgetsWithOverlap = widgetsToRight.filter(w => hasVerticalOverlapBetween(resizingBoundsForHorz, w));
+            console.log('Widgets with vertical overlap:', widgetsWithOverlap.length);
+            widgetsWithOverlap.forEach(w => console.log(`  With overlap: ${w.id.slice(-8)}: x=${w.x}, y=${w.y}, h=${w.h}`));
+
+            if (widgetsWithOverlap.length > 0) {
+              widgetsWithOverlap.sort((a, b) => a.x - b.x);
+              gapToFirstWidget = widgetsWithOverlap[0].x - originalRightEdge;
             }
-          }
 
-          // CRITICAL FIX: Check if pushed widgets would horizontally overlap with non-chain widgets
-          // that are at the right edge of the viewport
-          if (canPush) {
-            for (const pushedWidget of potentialWidgets) {
-              const pushedNewY = newPositions.get(pushedWidget.id) ?? pushedWidget.origY;
+            // Calculate gap fill vs push
+            const gapFillHorz = Math.min(horizontalExpansion, gapToFirstWidget);
+            let pushAmountHorz = Math.max(0, horizontalExpansion - gapToFirstWidget);
+            console.log('Gap to first widget:', gapToFirstWidget);
+            console.log('Gap fill:', gapFillHorz, 'Initial push amount:', pushAmountHorz);
 
-              for (const nonChain of nonChainWidgets) {
-                // Check for horizontal overlap
-                const hasHorizontalOverlap = !(pushedWidget.x + pushedWidget.w <= nonChain.x || pushedWidget.x >= nonChain.x + nonChain.w);
-                // Check for vertical overlap at new position
-                const pushedTop = pushedNewY;
-                const pushedBottom = pushedNewY + pushedWidget.h;
-                const hasVerticalOverlap = !(pushedBottom <= nonChain.y || pushedTop >= nonChain.y + nonChain.h);
+            // BFS chain detection - same as horizontal resize
+            // Start with ALL widgets that have vertical overlap with resizing widget (not just adjacent)
+            const directPushWidgets = widgetsToRight.filter(w =>
+              hasVerticalOverlapBetween(resizingBoundsForHorz, w)
+            );
+            console.log('Direct push widgets (vertical overlap):', directPushWidgets.length);
+            directPushWidgets.forEach(w => console.log(`  Direct: ${w.id.slice(-8)}: x=${w.x}`));
 
-                if (hasHorizontalOverlap && hasVerticalOverlap) {
-                  // Check if non-chain widget is at the right edge (can't be pushed right)
-                  const spaceRight = GRID_CONFIG.cols - (nonChain.x + nonChain.w);
-                  // Check if non-chain widget is at the bottom edge (can't be pushed down)
-                  const spaceBelow = maxRows - (nonChain.y + nonChain.h);
+            const pushedSet = new Set<string>();
+            const queue = [...directPushWidgets];
 
-                  if (spaceRight <= 0 && spaceBelow <= 0) {
-                    // Can't push this non-chain widget anywhere - limit expansion
-                    // Calculate max height that doesn't cause collision
-                    const maxPushedY = nonChain.y - pushedWidget.h;
-                    if (maxPushedY < pushedWidget.origY) {
-                      // Can't push enough - limit expansion
-                      const expansion = pushedWidget.origY - originalBottomEdge;
-                      adjustedRequestedH = resizingLayout.h + expansion;
-                      canPush = adjustedRequestedH > resizingLayout.h;
-                      console.log('[DEBUG] Limiting vertical expansion due to edge collision:', {
-                        nonChainWidget: nonChain.id,
-                        adjustedRequestedH,
-                      });
+            while (queue.length > 0) {
+              const current = queue.shift()!;
+              if (pushedSet.has(current.id)) continue;
+              pushedSet.add(current.id);
+              widgetsToPushHorz.push(current);
+
+              const currentRightEdge = current.x + current.w;
+              for (const other of widgetsToRight) {
+                if (pushedSet.has(other.id)) continue;
+                const isToRight = other.x >= currentRightEdge;
+                const hasOverlap = !(current.y + current.h <= other.y || current.y >= other.y + other.h);
+                if (isToRight && hasOverlap) queue.push(other);
+              }
+            }
+
+            widgetsToPushHorz.sort((a, b) => a.x - b.x);
+            console.log('Widgets to push (BFS chain):', widgetsToPushHorz.length);
+            widgetsToPushHorz.forEach(w => console.log(`  In chain: ${w.id.slice(-8)}: x=${w.x}`));
+
+            // Identify non-chain widgets (widgets NOT in the push chain)
+            const pushedIds = new Set(widgetsToPushHorz.map(w => w.id));
+            const nonChainWidgets = allWidgets.filter(w => !pushedIds.has(w.id));
+            console.log('Non-chain widgets:', nonChainWidgets.length);
+
+            // Calculate available push space (INCLUDING gaps between widgets in chain - same as horizontal resize)
+            if (widgetsToPushHorz.length > 0) {
+              // There are widgets to push
+              if (pushAmountHorz > 0) {
+                // Sort widgets left to right
+                const sortedWidgets = [...widgetsToPushHorz].sort((a, b) => a.x - b.x);
+
+                // Calculate total gaps between widgets in the chain
+                let totalGaps = 0;
+                for (let i = 0; i < sortedWidgets.length - 1; i++) {
+                  const currentRightEdge = sortedWidgets[i].x + sortedWidgets[i].w;
+                  const nextLeftEdge = sortedWidgets[i + 1].x;
+                  const gap = nextLeftEdge - currentRightEdge;
+                  if (gap > 0) {
+                    totalGaps += gap;
+                  }
+                }
+
+                // Space at the end (viewport edge - rightmost widget)
+                const rightmostEdge = Math.max(...widgetsToPushHorz.map(w => w.x + w.w));
+                let blockingEdge = GRID_CONFIG.cols;
+
+                // Check for non-chain widgets blocking
+                for (const nonChain of nonChainWidgets) {
+                  const hasOverlapWithChain = widgetsToPushHorz.some(chainWidget =>
+                    hasVerticalOverlapBetween(chainWidget, nonChain)
+                  );
+                  if (hasOverlapWithChain && nonChain.x >= rightmostEdge) {
+                    blockingEdge = Math.min(blockingEdge, nonChain.x);
+                  }
+                }
+
+                const spaceAtEnd = blockingEdge - rightmostEdge;
+                const availablePushSpace = totalGaps + spaceAtEnd;
+
+                console.log('Total gaps between widgets:', totalGaps);
+                console.log('Rightmost widget edge:', rightmostEdge);
+                console.log('Space at end:', spaceAtEnd);
+                console.log('Total available push space:', availablePushSpace);
+                pushAmountHorz = Math.min(pushAmountHorz, availablePushSpace);
+                console.log('Actual push amount (limited):', pushAmountHorz);
+
+                // Check collision with non-chain widgets
+                for (const pushedWidget of widgetsToPushHorz) {
+                  const pushedNewX = pushedWidget.x + pushAmountHorz;
+                  const clampedPushedX = Math.min(pushedNewX, GRID_CONFIG.cols - pushedWidget.w);
+
+                  for (const nonChain of nonChainWidgets) {
+                    const pushedLeftEdge = clampedPushedX;
+                    const pushedRightEdge = clampedPushedX + pushedWidget.w;
+                    const nonChainLeftEdge = nonChain.x;
+                    const nonChainRightEdge = nonChain.x + nonChain.w;
+
+                    const hasHorzOverlap = !(pushedRightEdge <= nonChainLeftEdge || pushedLeftEdge >= nonChainRightEdge);
+                    const hasVertOverlap = !(pushedWidget.y + pushedWidget.h <= nonChain.y || pushedWidget.y >= nonChain.y + nonChain.h);
+
+                    if (hasHorzOverlap && hasVertOverlap) {
+                      const maxPushedX = nonChainLeftEdge - pushedWidget.w;
+                      const maxPush = Math.max(0, maxPushedX - pushedWidget.x);
+                      if (maxPush < pushAmountHorz) {
+                        console.log('Non-chain collision! Limiting push from', pushAmountHorz, 'to', maxPush);
+                        pushAmountHorz = maxPush;
+                      }
+                    }
+                  }
+                }
+
+                // Also check if resizing widget itself collides with non-chain widgets
+                const resizingNewRightEdge = resizingLayout.x + resizingLayout.w + gapFillHorz + pushAmountHorz;
+                for (const nonChain of nonChainWidgets) {
+                  const hasHorzOverlap = !(resizingNewRightEdge <= nonChain.x || resizingLayout.x >= nonChain.x + nonChain.w);
+                  const hasVertOverlap = hasVerticalOverlapBetween(resizingBoundsForHorz, nonChain);
+
+                  if (hasHorzOverlap && hasVertOverlap) {
+                    const maxW = nonChain.x - resizingLayout.x;
+                    const maxAchievable = Math.max(resizingLayout.w, maxW);
+                    const newPushAmount = Math.max(0, maxAchievable - resizingLayout.w - gapFillHorz);
+                    if (newPushAmount < pushAmountHorz) {
+                      console.log('Resizing widget collision! Limiting push from', pushAmountHorz, 'to', newPushAmount);
+                      pushAmountHorz = newPushAmount;
                     }
                   }
                 }
               }
-            }
-          }
-        } else {
-          // Sort bottom to top (closest first)
-          potentialWidgets.sort((a, b) => b.origY - a.origY);
-          let currentTopEdge = newTopEdge;
-          for (const widget of potentialWidgets) {
-            if (currentTopEdge < widget.origY + widget.h) {
-              const newY = currentTopEdge - widget.h;
-              if (newY < 0) { canPush = false; break; }
-              newPositions.set(widget.id, newY);
-              currentTopEdge = newY;
+
+              // Limit clampedW to respect available space (original width + gap fill + push)
+              const maxAchievableWidth = resizingLayout.w + gapFillHorz + pushAmountHorz;
+              if (clampedW > maxAchievableWidth) {
+                console.log('Limiting clampedW from', clampedW, 'to', maxAchievableWidth);
+                clampedW = maxAchievableWidth;
+              }
             } else {
-              newPositions.set(widget.id, widget.origY);
-              currentTopEdge = widget.origY;
+              // No widgets to push - can expand freely up to gap (or viewport edge if no gap)
+              console.log('No adjacent widgets - free expansion up to gap:', gapFillHorz);
+              // Use original width + gap fill
+              const maxAchievableWidth = resizingLayout.w + gapFillHorz;
+              if (clampedW > maxAchievableWidth) {
+                console.log('Limiting clampedW from', clampedW, 'to', maxAchievableWidth);
+                clampedW = maxAchievableWidth;
+              }
             }
-          }
 
-          // Similar check for north resize
-          if (canPush) {
-            for (const pushedWidget of potentialWidgets) {
-              const pushedNewY = newPositions.get(pushedWidget.id) ?? pushedWidget.origY;
+            // Only push if there's actual push needed (after gap fill)
+            if (pushAmountHorz > 0) {
+              // Sort widgets left to right for cascading calculation (same as horizontal resize)
+              const sortedWidgets = [...widgetsToPushHorz].sort((a, b) => a.x - b.x);
 
-              for (const nonChain of nonChainWidgets) {
-                const hasHorizontalOverlap = !(pushedWidget.x + pushedWidget.w <= nonChain.x || pushedWidget.x >= nonChain.x + nonChain.w);
-                const pushedTop = pushedNewY;
-                const pushedBottom = pushedNewY + pushedWidget.h;
-                const hasVerticalOverlap = !(pushedBottom <= nonChain.y || pushedTop >= nonChain.y + nonChain.h);
+              console.log('=== CASCADING POSITION CALC (CORNER HORZ) ===');
+              console.log('Actual push:', pushAmountHorz);
 
-                if (hasHorizontalOverlap && hasVerticalOverlap) {
-                  const spaceLeft = nonChain.x;
-                  const spaceAbove = nonChain.y;
+              // Calculate the resizing widget's new right edge (same as horizontal-only resize)
+              const resizingNewRightEdge = resizingLayout.x + clampedW;
 
-                  if (spaceLeft <= 0 && spaceAbove <= 0) {
-                    // Can't push - limit expansion
-                    const maxPushedY = nonChain.y + nonChain.h;
-                    if (maxPushedY > pushedWidget.origY) {
-                      const expansion = originalTopEdge - (pushedWidget.origY + pushedWidget.h);
-                      adjustedRequestedH = resizingLayout.h + expansion;
-                      adjustedRequestedY = resizingLayout.y - expansion;
-                      canPush = adjustedRequestedH > resizingLayout.h;
+              // Process widgets from left to right - SAME LOGIC AS HORIZONTAL-ONLY RESIZE
+              for (let i = 0; i < sortedWidgets.length; i++) {
+                const w = sortedWidgets[i];
+
+                // Find the widget that would actually push this widget
+                // It must be: to the left of this widget AND have vertical overlap with this widget
+                let pushForThisWidget = pushAmountHorz; // Default: pushed by resizing widget
+
+                // Check if any already-processed widget is to the left AND has vertical overlap
+                let pushedByWidget: typeof w | null = null;
+                let maxPushFromChain = 0;
+
+                for (let j = 0; j < i; j++) {
+                  const prevWidget = sortedWidgets[j];
+                  const prevNewX = horzPositions.get(prevWidget.id) ?? prevWidget.x;
+                  const prevNewRightEdge = prevNewX + prevWidget.w;
+
+                  // Check if prevWidget has vertical overlap with current widget
+                  const hasVertOverlap = !(prevWidget.y + prevWidget.h <= w.y || prevWidget.y >= w.y + w.h);
+
+                  // Check if prevWidget is actually to the left (before pushing) AND its new right edge reaches us
+                  if (hasVertOverlap && prevWidget.x + prevWidget.w <= w.x) {
+                    if (prevNewRightEdge > w.x) {
+                      const cascadePush = prevNewRightEdge - w.x;
+                      if (cascadePush > maxPushFromChain) {
+                        maxPushFromChain = cascadePush;
+                        pushedByWidget = prevWidget;
+                      }
                     }
                   }
+                }
+
+                // If we found a widget that cascades into us, use that push
+                // Otherwise, check if resizing widget directly pushes us
+                if (pushedByWidget && maxPushFromChain > 0) {
+                  pushForThisWidget = maxPushFromChain;
+                  console.log(`  Widget ${w.id.slice(-8)}: cascaded from ${pushedByWidget.id.slice(-8)}, push=${pushForThisWidget}`);
+                } else {
+                  // Check if resizing widget's new right edge reaches us
+                  if (resizingNewRightEdge > w.x) {
+                    pushForThisWidget = resizingNewRightEdge - w.x;
+                    console.log(`  Widget ${w.id.slice(-8)}: pushed by resizing widget, push=${pushForThisWidget}`);
+                  } else {
+                    pushForThisWidget = 0;
+                    console.log(`  Widget ${w.id.slice(-8)}: no push needed (gap exists)`);
+                  }
+                }
+
+                if (pushForThisWidget <= 0) {
+                  horzPositions.set(w.id, w.x);
+                  console.log(`  Widget ${w.id.slice(-8)}: stays at x=${w.x}`);
+                } else {
+                  const maxMove = GRID_CONFIG.cols - w.w - w.x;
+                  const actualMove = Math.min(pushForThisWidget, maxMove);
+                  const newX = w.x + actualMove;
+                  horzPositions.set(w.id, newX);
+                  console.log(`  Widget ${w.id.slice(-8)}: moves to x=${newX} (push=${pushForThisWidget}, actualMove=${actualMove})`);
+                }
+              }
+
+              console.log('=== END CASCADING CALC ===');
+            }
+          } else if (isWestResize) {
+            const widgetsToLeft = allWidgets
+              .filter(w => w.x + w.w <= originalLeftEdge)
+              .sort((a, b) => b.x - a.x);
+
+            // Find gap to first widget with vertical overlap
+            let gapToFirstWidget = originalLeftEdge;
+            const widgetsWithOverlap = widgetsToLeft.filter(w => hasVerticalOverlapBetween(resizingBoundsForHorz, w));
+            if (widgetsWithOverlap.length > 0) {
+              widgetsWithOverlap.sort((a, b) => (b.x + b.w) - (a.x + a.w));
+              gapToFirstWidget = originalLeftEdge - (widgetsWithOverlap[0].x + widgetsWithOverlap[0].w);
+            }
+
+            const gapFillHorz = Math.min(horizontalExpansion, gapToFirstWidget);
+            const pushAmountHorz = Math.max(0, horizontalExpansion - gapToFirstWidget);
+
+            const directPushWidgets = widgetsToLeft.filter(w => hasVerticalOverlapBetween(resizingBoundsForHorz, w));
+            const pushedSet = new Set<string>();
+            const queue = [...directPushWidgets];
+
+            while (queue.length > 0) {
+              const current = queue.shift()!;
+              if (pushedSet.has(current.id)) continue;
+              pushedSet.add(current.id);
+              widgetsToPushHorz.push(current);
+
+              for (const other of widgetsToLeft) {
+                if (pushedSet.has(other.id)) continue;
+                if (other.x + other.w > current.x) continue;
+                const hasOverlap = !(current.y + current.h <= other.y || current.y >= other.y + other.h);
+                if (hasOverlap) queue.push(other);
+              }
+            }
+
+            widgetsToPushHorz.sort((a, b) => b.x - a.x);
+
+            if (pushAmountHorz > 0) {
+              const newLeftEdgeAfterGap = originalLeftEdge - gapFillHorz - pushAmountHorz;
+
+              for (const widget of widgetsToPushHorz) {
+                let pushForThisWidget = 0;
+
+                for (const prevWidget of widgetsToPushHorz) {
+                  if (prevWidget.id === widget.id) continue;
+                  const prevNewX = horzPositions.get(prevWidget.id);
+                  if (prevNewX === undefined) continue;
+
+                  const hasVertOverlap = !(prevWidget.y + prevWidget.h <= widget.y || prevWidget.y >= widget.y + widget.h);
+                  const wRightEdge = widget.x + widget.w;
+
+                  if (hasVertOverlap && prevWidget.x >= wRightEdge && prevNewX < wRightEdge) {
+                    const cascadePush = wRightEdge - prevNewX;
+                    if (cascadePush > pushForThisWidget) pushForThisWidget = cascadePush;
+                  }
+                }
+
+                if (pushForThisWidget === 0) {
+                  const wRightEdge = widget.x + widget.w;
+                  if (newLeftEdgeAfterGap < wRightEdge) pushForThisWidget = wRightEdge - newLeftEdgeAfterGap;
+                }
+
+                if (pushForThisWidget > 0) {
+                  horzPositions.set(widget.id, Math.max(0, widget.x - pushForThisWidget));
                 }
               }
             }
           }
         }
 
-        if (!canPush) return;
+        // Calculate vertical push with FULL CASCADING logic (same as vertical-only resize)
+        // INCLUDING GAP FILL - first fill gap to first widget, then push
+        const vertPositions: Map<string, number> = new Map();
+        const resizingBoundsForVert = { x: clampedX, w: clampedW };
 
-        // Recalculate positions if expansion was adjusted
-        if (adjustedRequestedH !== requestedH) {
-          newPositions.clear();
-          const adjustedBottomEdge = adjustedRequestedY + adjustedRequestedH;
-          const adjustedTopEdge = adjustedRequestedY;
+        // Use ORIGINAL edges (same as vertical-only resize)
+        const originalBottomEdge = resizingLayout.y + resizingLayout.h;
+        const originalTopEdge = resizingLayout.y;
+
+        console.log('=== CORNER VERTICAL CHECK ===');
+        console.log('requestedH:', requestedH, 'resizingLayout.h:', resizingLayout.h);
+        console.log('Will process vertical?', requestedH > resizingLayout.h);
+
+        // Check if user is REQUESTING vertical expansion (use requestedH, not clampedH)
+        // This allows continuous resize - as user drags further, expansion keeps increasing
+        if (requestedH > resizingLayout.h) {
+          const verticalExpansion = requestedH - resizingLayout.h;
+          console.log('=== CORNER VERTICAL PUSH ===');
+          console.log('Vertical expansion:', verticalExpansion);
+
+          // Collect ALL widgets to push using BFS chain detection
+          const widgetsToPushVert: typeof allWidgets = [];
 
           if (isSouthResize) {
-            let currentBottomEdge = adjustedBottomEdge;
-            for (const widget of potentialWidgets) {
-              if (currentBottomEdge > widget.origY) {
-                newPositions.set(widget.id, currentBottomEdge);
-                currentBottomEdge = currentBottomEdge + widget.h;
-              } else {
-                newPositions.set(widget.id, widget.origY);
+            console.log('=== CORNER SOUTH RESIZE ===');
+            const widgetsBelow = allWidgets
+              .filter(w => w.y >= originalBottomEdge)
+              .sort((a, b) => a.y - b.y);
+
+            console.log('Current bottom edge:', originalBottomEdge);
+            console.log('Widgets below:', widgetsBelow.length);
+            widgetsBelow.forEach(w => console.log(`  - ${w.id.slice(-8)}: y=${w.y}, h=${w.h}`));
+
+            // Find gap to first widget with horizontal overlap
+            let gapToFirstWidget = maxRows - originalBottomEdge;
+            const widgetsWithOverlap = widgetsBelow.filter(w => hasHorizontalOverlapBetween(resizingBoundsForVert, w));
+            console.log('Widgets with horizontal overlap:', widgetsWithOverlap.length);
+            if (widgetsWithOverlap.length > 0) {
+              widgetsWithOverlap.sort((a, b) => a.y - b.y);
+              gapToFirstWidget = widgetsWithOverlap[0].y - originalBottomEdge;
+              console.log('First widget with overlap:', widgetsWithOverlap[0].id.slice(-8), 'at y=', widgetsWithOverlap[0].y);
+            }
+
+            // Calculate gap fill vs push
+            const gapFillVert = Math.min(verticalExpansion, gapToFirstWidget);
+            let pushAmountVert = Math.max(0, verticalExpansion - gapToFirstWidget);
+            console.log('Gap to first widget:', gapToFirstWidget);
+            console.log('Gap fill:', gapFillVert, 'Initial push amount:', pushAmountVert);
+
+            // BFS chain detection - same as vertical resize
+            // Start with ALL widgets that have horizontal overlap with resizing widget (not just adjacent)
+            const directPushWidgets = widgetsBelow.filter(w =>
+              hasHorizontalOverlapBetween(resizingBoundsForVert, w)
+            );
+            console.log('Direct push widgets (horizontal overlap):', directPushWidgets.length);
+            directPushWidgets.forEach(w => console.log(`  Direct: ${w.id.slice(-8)}: y=${w.y}`));
+
+            const pushedSet = new Set<string>();
+            const queue = [...directPushWidgets];
+
+            while (queue.length > 0) {
+              const current = queue.shift()!;
+              if (pushedSet.has(current.id)) continue;
+              pushedSet.add(current.id);
+              widgetsToPushVert.push(current);
+
+              const currentBottomEdge = current.y + current.h;
+              for (const other of widgetsBelow) {
+                if (pushedSet.has(other.id)) continue;
+                const isBelow = other.y >= currentBottomEdge;
+                const hasOverlap = !(current.x + current.w <= other.x || current.x >= other.x + other.w);
+                if (isBelow && hasOverlap) queue.push(other);
               }
             }
-          } else {
-            let currentTopEdge = adjustedTopEdge;
-            for (const widget of potentialWidgets) {
-              if (currentTopEdge < widget.origY + widget.h) {
-                newPositions.set(widget.id, currentTopEdge - widget.h);
-                currentTopEdge = currentTopEdge - widget.h;
-              } else {
-                newPositions.set(widget.id, widget.origY);
+
+            widgetsToPushVert.sort((a, b) => a.y - b.y);
+
+            // Identify non-chain widgets (widgets NOT in the push chain)
+            const pushedIdsVert = new Set(widgetsToPushVert.map(w => w.id));
+            const nonChainWidgetsVert = allWidgets.filter(w => !pushedIdsVert.has(w.id));
+
+            // Calculate available push space (INCLUDING gaps between widgets in chain - same as vertical resize)
+            if (widgetsToPushVert.length > 0) {
+              // There are widgets to push
+              if (pushAmountVert > 0) {
+                // Sort widgets top to bottom
+                const sortedWidgets = [...widgetsToPushVert].sort((a, b) => a.y - b.y);
+
+                // Calculate total gaps between widgets in the chain
+                let totalGaps = 0;
+                for (let i = 0; i < sortedWidgets.length - 1; i++) {
+                  const currentBottomEdge = sortedWidgets[i].y + sortedWidgets[i].h;
+                  const nextTopEdge = sortedWidgets[i + 1].y;
+                  const gap = nextTopEdge - currentBottomEdge;
+                  if (gap > 0) {
+                    totalGaps += gap;
+                  }
+                }
+
+                // Space at the end (viewport edge - bottommost widget)
+                const bottommostEdge = Math.max(...widgetsToPushVert.map(w => w.y + w.h));
+                let blockingEdge = maxRows;
+
+                // Check for non-chain widgets blocking
+                for (const nonChain of nonChainWidgetsVert) {
+                  const hasOverlapWithChain = widgetsToPushVert.some(chainWidget =>
+                    hasHorizontalOverlapBetween(chainWidget, nonChain)
+                  );
+                  if (hasOverlapWithChain && nonChain.y >= bottommostEdge) {
+                    blockingEdge = Math.min(blockingEdge, nonChain.y);
+                  }
+                }
+
+                const spaceAtEnd = blockingEdge - bottommostEdge;
+                const availablePushSpace = totalGaps + spaceAtEnd;
+
+                console.log('Total gaps between widgets:', totalGaps);
+                console.log('Bottommost widget edge:', bottommostEdge);
+                console.log('Space at end:', spaceAtEnd);
+                console.log('Total available push space:', availablePushSpace);
+                pushAmountVert = Math.min(pushAmountVert, availablePushSpace);
+                console.log('Actual push amount (limited):', pushAmountVert);
+
+                // Check collision with non-chain widgets
+                for (const pushedWidget of widgetsToPushVert) {
+                  const pushedNewY = pushedWidget.y + pushAmountVert;
+                  const clampedPushedY = Math.min(pushedNewY, maxRows - pushedWidget.h);
+
+                  for (const nonChain of nonChainWidgetsVert) {
+                    const pushedTopEdge = clampedPushedY;
+                    const pushedBottomEdge = clampedPushedY + pushedWidget.h;
+                    const nonChainTopEdge = nonChain.y;
+                    const nonChainBottomEdge = nonChain.y + nonChain.h;
+
+                    const hasVertOverlap = !(pushedBottomEdge <= nonChainTopEdge || pushedTopEdge >= nonChainBottomEdge);
+                    const hasHorzOverlap = !(pushedWidget.x + pushedWidget.w <= nonChain.x || pushedWidget.x >= nonChain.x + nonChain.w);
+
+                    if (hasHorzOverlap && hasVertOverlap) {
+                      const maxPushedY = nonChainTopEdge - pushedWidget.h;
+                      const maxPush = Math.max(0, maxPushedY - pushedWidget.y);
+                      if (maxPush < pushAmountVert) {
+                        console.log('Non-chain collision (vert)! Limiting push from', pushAmountVert, 'to', maxPush);
+                        pushAmountVert = maxPush;
+                      }
+                    }
+                  }
+                }
+
+                // Also check if resizing widget itself collides with non-chain widgets
+                const resizingNewBottomEdge = resizingLayout.y + resizingLayout.h + gapFillVert + pushAmountVert;
+                for (const nonChain of nonChainWidgetsVert) {
+                  const hasVertOverlap = !(resizingNewBottomEdge <= nonChain.y || resizingLayout.y >= nonChain.y + nonChain.h);
+                  const hasHorzOverlap = hasHorizontalOverlapBetween(resizingBoundsForVert, nonChain);
+
+                  if (hasHorzOverlap && hasVertOverlap) {
+                    const maxH = nonChain.y - resizingLayout.y;
+                    const maxAchievable = Math.max(resizingLayout.h, maxH);
+                    const newPushAmount = Math.max(0, maxAchievable - resizingLayout.h - gapFillVert);
+                    if (newPushAmount < pushAmountVert) {
+                      console.log('Resizing widget collision (vert)! Limiting push from', pushAmountVert, 'to', newPushAmount);
+                      pushAmountVert = newPushAmount;
+                    }
+                  }
+                }
+              }
+
+              // Limit clampedH to respect available space (original height + gap fill + push)
+              const maxAchievableHeight = resizingLayout.h + gapFillVert + pushAmountVert;
+              if (clampedH > maxAchievableHeight) {
+                console.log('Limiting clampedH from', clampedH, 'to', maxAchievableHeight);
+                clampedH = maxAchievableHeight;
+              }
+            } else {
+              // No widgets to push - can expand freely up to gap (or viewport edge if no gap)
+              console.log('No adjacent widgets (vert) - free expansion up to gap:', gapFillVert);
+              // Use original height + gap fill
+              const maxAchievableHeight = resizingLayout.h + gapFillVert;
+              if (clampedH > maxAchievableHeight) {
+                console.log('Limiting clampedH from', clampedH, 'to', maxAchievableHeight);
+                clampedH = maxAchievableHeight;
+              }
+            }
+
+            // Only push if there's actual push needed (after gap fill)
+            if (pushAmountVert > 0) {
+              // Sort widgets top to bottom for cascading calculation (same as vertical resize)
+              const sortedWidgets = [...widgetsToPushVert].sort((a, b) => a.y - b.y);
+
+              console.log('=== CASCADING POSITION CALC (CORNER VERT) ===');
+              console.log('Actual push:', pushAmountVert);
+
+              // Calculate the resizing widget's new bottom edge (same as vertical-only resize)
+              const resizingNewBottomEdge = resizingLayout.y + clampedH;
+
+              // Process widgets from top to bottom - SAME LOGIC AS VERTICAL-ONLY RESIZE
+              for (let i = 0; i < sortedWidgets.length; i++) {
+                const w = sortedWidgets[i];
+
+                // Find the widget that would actually push this widget
+                // It must be: above this widget AND have horizontal overlap with this widget
+                let pushForThisWidget = pushAmountVert; // Default: pushed by resizing widget
+
+                // Check if any already-processed widget is above AND has horizontal overlap
+                let pushedByWidget: typeof w | null = null;
+                let maxPushFromChain = 0;
+
+                for (let j = 0; j < i; j++) {
+                  const prevWidget = sortedWidgets[j];
+                  const prevNewY = vertPositions.get(prevWidget.id) ?? prevWidget.y;
+                  const prevNewBottomEdge = prevNewY + prevWidget.h;
+
+                  // Check if prevWidget has horizontal overlap with current widget
+                  const hasHorzOverlap = !(prevWidget.x + prevWidget.w <= w.x || prevWidget.x >= w.x + w.w);
+
+                  // Check if prevWidget is actually above (before pushing) AND its new bottom edge reaches us
+                  if (hasHorzOverlap && prevWidget.y + prevWidget.h <= w.y) {
+                    if (prevNewBottomEdge > w.y) {
+                      const cascadePush = prevNewBottomEdge - w.y;
+                      if (cascadePush > maxPushFromChain) {
+                        maxPushFromChain = cascadePush;
+                        pushedByWidget = prevWidget;
+                      }
+                    }
+                  }
+                }
+
+                // If we found a widget that cascades into us, use that push
+                // Otherwise, check if resizing widget directly pushes us
+                if (pushedByWidget && maxPushFromChain > 0) {
+                  pushForThisWidget = maxPushFromChain;
+                  console.log(`  Widget ${w.id.slice(-8)}: cascaded from ${pushedByWidget.id.slice(-8)}, push=${pushForThisWidget}`);
+                } else {
+                  // Check if resizing widget's new bottom edge reaches us
+                  if (resizingNewBottomEdge > w.y) {
+                    pushForThisWidget = resizingNewBottomEdge - w.y;
+                    console.log(`  Widget ${w.id.slice(-8)}: pushed by resizing widget, push=${pushForThisWidget}`);
+                  } else {
+                    pushForThisWidget = 0;
+                    console.log(`  Widget ${w.id.slice(-8)}: no push needed (gap exists)`);
+                  }
+                }
+
+                if (pushForThisWidget <= 0) {
+                  vertPositions.set(w.id, w.y);
+                  console.log(`  Widget ${w.id.slice(-8)}: stays at y=${w.y}`);
+                } else {
+                  const maxMove = maxRows - w.h - w.y;
+                  const actualMove = Math.min(pushForThisWidget, maxMove);
+                  const newY = w.y + actualMove;
+                  vertPositions.set(w.id, newY);
+                  console.log(`  Widget ${w.id.slice(-8)}: moves to y=${newY} (push=${pushForThisWidget}, actualMove=${actualMove})`);
+                }
+              }
+
+              console.log('=== END CASCADING CALC ===');
+            }
+          } else if (isNorthResize) {
+            const widgetsAbove = allWidgets
+              .filter(w => w.y + w.h <= originalTopEdge)
+              .sort((a, b) => b.y - a.y);
+
+            // Find gap to first widget with horizontal overlap
+            let gapToFirstWidget = originalTopEdge;
+            const widgetsWithOverlap = widgetsAbove.filter(w => hasHorizontalOverlapBetween(resizingBoundsForVert, w));
+            if (widgetsWithOverlap.length > 0) {
+              widgetsWithOverlap.sort((a, b) => (b.y + b.h) - (a.y + a.h));
+              gapToFirstWidget = originalTopEdge - (widgetsWithOverlap[0].y + widgetsWithOverlap[0].h);
+            }
+
+            const gapFillVert = Math.min(verticalExpansion, gapToFirstWidget);
+            const pushAmountVert = Math.max(0, verticalExpansion - gapToFirstWidget);
+
+            const directPushWidgets = widgetsAbove.filter(w => hasHorizontalOverlapBetween(resizingBoundsForVert, w));
+            const pushedSet = new Set<string>();
+            const queue = [...directPushWidgets];
+
+            while (queue.length > 0) {
+              const current = queue.shift()!;
+              if (pushedSet.has(current.id)) continue;
+              pushedSet.add(current.id);
+              widgetsToPushVert.push(current);
+
+              for (const other of widgetsAbove) {
+                if (pushedSet.has(other.id)) continue;
+                if (other.y + other.h > current.y) continue;
+                const hasOverlap = !(current.x + current.w <= other.x || current.x >= other.x + other.w);
+                if (hasOverlap) queue.push(other);
+              }
+            }
+
+            widgetsToPushVert.sort((a, b) => b.y - a.y);
+
+            if (pushAmountVert > 0) {
+              const newTopEdgeAfterGap = originalTopEdge - gapFillVert - pushAmountVert;
+
+              for (const widget of widgetsToPushVert) {
+                let pushForThisWidget = 0;
+
+                for (const prevWidget of widgetsToPushVert) {
+                  if (prevWidget.id === widget.id) continue;
+                  const prevNewY = vertPositions.get(prevWidget.id);
+                  if (prevNewY === undefined) continue;
+
+                  const hasHorzOverlap = !(prevWidget.x + prevWidget.w <= widget.x || prevWidget.x >= widget.x + widget.w);
+                  const wBottomEdge = widget.y + widget.h;
+
+                  if (hasHorzOverlap && prevWidget.y >= wBottomEdge && prevNewY < wBottomEdge) {
+                    const cascadePush = wBottomEdge - prevNewY;
+                    if (cascadePush > pushForThisWidget) pushForThisWidget = cascadePush;
+                  }
+                }
+
+                if (pushForThisWidget === 0) {
+                  const wBottomEdge = widget.y + widget.h;
+                  if (newTopEdgeAfterGap < wBottomEdge) pushForThisWidget = wBottomEdge - newTopEdgeAfterGap;
+                }
+
+                if (pushForThisWidget > 0) {
+                  vertPositions.set(widget.id, Math.max(0, widget.y - pushForThisWidget));
+                }
               }
             }
           }
         }
 
-        // Update DOM
-        resizeWidgetDom(resizingWidgetIdRef.current, resizingLayout.w, adjustedRequestedH);
-        if (isNorthResize) {
-          moveWidgetDom(resizingWidgetIdRef.current, resizingLayout.x, adjustedRequestedY);
+        // Determine if we're expanding in each direction
+        const isExpandingHorz = clampedW > resizingLayout.w;
+        const isExpandingVert = clampedH > resizingLayout.h;
+
+        // Apply DOM updates
+        resizeWidgetDom(resizingWidgetIdRef.current, clampedW, clampedH);
+        if (isWestResize || isNorthResize) {
+          moveWidgetDom(resizingWidgetIdRef.current, clampedX, clampedY);
         }
 
+        // Move widgets - use ORIGINAL positions from baseLayouts as fallback (not currentLayouts)
+        // This ensures widgets return to original position when not expanding in that direction
         const movedWidgetIds: string[] = [];
-        for (const widget of potentialWidgets) {
-          const newY = newPositions.get(widget.id);
-          if (newY !== undefined) {
-            moveWidgetDom(widget.id, widget.x, newY);
-            if (newY !== widget.origY) movedWidgetIds.push(widget.id);
+        for (const l of baseLayouts) {
+          if (l.i === resizingWidgetIdRef.current) continue;
+
+          // For horizontal: use pushed position if expanding horizontally, otherwise original
+          const newX = isExpandingHorz ? (horzPositions.get(l.i) ?? l.x) : l.x;
+          // For vertical: use pushed position if expanding vertically, otherwise original
+          const newY = isExpandingVert ? (vertPositions.get(l.i) ?? l.y) : l.y;
+
+          // Get current position (from currentLayouts or baseLayouts)
+          const currentWidget = allWidgets.find(w => w.id === l.i);
+          const currentX = currentWidget?.x ?? l.x;
+          const currentY = currentWidget?.y ?? l.y;
+
+          if (newX !== currentX || newY !== currentY) {
+            moveWidgetDom(l.i, newX, newY);
+            movedWidgetIds.push(l.i);
           }
         }
 
+        // Build new layouts
         const newLayouts = baseLayouts.map(l => {
-          if (l.i === resizingWidgetIdRef.current) return { ...l, y: adjustedRequestedY, h: adjustedRequestedH };
-          const newY = newPositions.get(l.i);
-          if (newY !== undefined) return { ...l, y: newY };
-          return l;
+          if (l.i === resizingWidgetIdRef.current) {
+            return { ...l, x: clampedX, y: clampedY, w: clampedW, h: clampedH };
+          }
+          // For horizontal: use pushed position if expanding horizontally, otherwise original
+          const newX = isExpandingHorz ? (horzPositions.get(l.i) ?? l.x) : l.x;
+          // For vertical: use pushed position if expanding vertically, otherwise original
+          const newY = isExpandingVert ? (vertPositions.get(l.i) ?? l.y) : l.y;
+          return { ...l, x: newX, y: newY };
         });
+
+        // Validate
+        const hasInvalidPosition = newLayouts.some(layout =>
+          layout.x < 0 ||
+          layout.x + layout.w > GRID_CONFIG.cols ||
+          layout.y < 0 ||
+          layout.y + layout.h > maxRows
+        );
+
+        if (hasInvalidPosition) {
+          // Reset to base
+          for (const l of baseLayouts) {
+            if (l.i !== resizingWidgetIdRef.current) {
+              moveWidgetDom(l.i, l.x, l.y);
+            }
+          }
+          return;
+        }
 
         setResizePreview({ newLayouts, movedWidgets: movedWidgetIds, shrunkWidgets: [] });
         lastPushedLayoutRef.current = newLayouts;
@@ -1447,36 +2782,22 @@ export const DashboardLayout: React.FC = () => {
     oldItem: GridItemLayout,
     newItem: GridItemLayout,
     _placeholder: GridItemLayout,
-    e: MouseEvent,
+    _e: MouseEvent,
     _element: HTMLElement
   ) => {
     console.log('[DEBUG] handleResize called');
     try {
-    const widgetMinSizes = getWidgetMinSizes();
-    // Use resizeStartLayoutRef.current which contains the layout at resize start
-    // This ensures we're always calculating based on the original positions
-    const baseLayouts = resizeStartLayoutRef.current;
-
-    // For corner resizes (se, sw, ne, nw), check if user is primarily resizing vertically
-    // If so, constrain width to prevent accidental horizontal resize
+    // CRITICAL: Our custom mousemove handler handles ALL resize directions for real-time feedback
+    // Skip this callback entirely to prevent competing resize logic
     const direction = resizeDirectionRef.current;
-    const isCornerResize = direction && direction.length === 2;
-
-    if (isCornerResize) {
-      const mouseDeltaX = Math.abs(e.clientX - resizeStartMouseXRef.current);
-      const mouseDeltaY = Math.abs(e.clientY - resizeStartMouseYRef.current);
-
-      // If vertical movement is dominant (more than horizontal), constrain width to original
-      // This prevents width from changing when user intends to only resize height
-      if (mouseDeltaY > mouseDeltaX) {
-        const originalLayout = baseLayouts.find(l => l.i === newItem.i);
-        if (originalLayout) {
-          newItem = { ...newItem, w: originalLayout.w, x: originalLayout.x };
-        }
-      }
+    if (direction) {
+      console.log('[DEBUG] handleResize: Skipping, handled by mousemove handler');
+      return;
     }
 
-    // Get the original layout to check maxW constraint
+    // Fallback code - should not reach here as mousemove handles all resizes
+    const widgetMinSizes = getWidgetMinSizes();
+    const baseLayouts = resizeStartLayoutRef.current;
     const originalLayout = baseLayouts.find(l => l.i === newItem.i);
 
     // Check if this is an enlargement (size increased OR position moved to expand)
