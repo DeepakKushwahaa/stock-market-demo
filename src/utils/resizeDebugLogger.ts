@@ -1,6 +1,6 @@
 // Debug logger for resize operations
 // Logs are stored in localStorage and can be downloaded as a file
-const ENABLE_RESIZE_DEBUG = true;
+const ENABLE_RESIZE_DEBUG = false;
 const MAX_LOGS = 1000;
 const STORAGE_KEY = 'resize_debug_logs';
 
@@ -39,8 +39,8 @@ class ResizeDebugLogger {
         this.logs = this.logs.slice(-MAX_LOGS);
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.logs));
-    } catch (e) {
-      console.warn('Failed to save resize logs to localStorage:', e);
+    } catch {
+      // Silently fail if localStorage is not available
     }
   }
 
@@ -57,18 +57,12 @@ class ResizeDebugLogger {
 
     this.logs.push(entry);
     this.saveLogs();
-
-    // Also log to console for real-time debugging
-    const prefix = this.getPhasePrefix(type);
-    console.log(`${prefix} [${entry.timestamp}] ${message}`, data || '');
   }
 
   clear() {
     this.logs = [];
     this.sessionId = '';
     localStorage.removeItem(STORAGE_KEY);
-    console.clear();
-    console.log('🧹 Resize debug logs cleared');
   }
 
   startSession(widgetId: string, direction: string) {
@@ -200,7 +194,6 @@ class ResizeDebugLogger {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    console.log('📥 Logs downloaded');
   }
 
   // Get logs count
@@ -211,17 +204,6 @@ class ResizeDebugLogger {
   // Get all logs (for display in UI if needed)
   getLogs(): LogEntry[] {
     return [...this.logs];
-  }
-
-  private getPhasePrefix(phase: string): string {
-    if (phase.includes('START')) return '🟢';
-    if (phase.includes('PUSH')) return '➡️';
-    if (phase.includes('CALC')) return '🔢';
-    if (phase.includes('ERROR') || phase.includes('FAIL')) return '❌';
-    if (phase.includes('SUCCESS')) return '✅';
-    if (phase.includes('LIMIT')) return '⚠️';
-    if (phase.includes('END')) return '🏁';
-    return '📍';
   }
 }
 

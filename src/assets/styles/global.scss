@@ -19,26 +19,49 @@ body {
   overflow: hidden;
 }
 
-// Custom Scrollbar Styles
+// Custom Scrollbar Styles - Light Mode
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #1a1a1a;
+  background: #f1f5f9;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3d3d3d;
+  background: #cbd5e1;
   border-radius: 4px;
 }
 
-// Firefox scrollbar
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+// Firefox scrollbar - Light Mode
 * {
   scrollbar-width: thin;
-  scrollbar-color: #424242 transparent;
+  scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+// Dark Mode Scrollbar Styles
+html.dark {
+  ::-webkit-scrollbar-track {
+    background: #1e293b;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #475569;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+  }
+
+  * {
+    scrollbar-color: #475569 #1e293b;
+  }
 }
 
 // React Grid Layout Custom Styles

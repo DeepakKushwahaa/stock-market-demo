@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import type { GridItemLayout, WidgetInstance, WidgetType, DashboardLayoutState, PresetName } from '../types/gridLayout.types';
-import { defaultLayoutState, GRID_CONFIG, DEFAULT_WIDGET_SIZES, LAYOUT_PRESETS } from '../utils/layoutDefaults';
+import type { GridItemLayout, WidgetInstance, WidgetType, DashboardLayoutState } from '../types/gridLayout.types';
+import { defaultLayoutState, GRID_CONFIG, DEFAULT_WIDGET_SIZES } from '../utils/layoutDefaults';
 import { layoutService } from '../services/layoutService';
 import { calculateAutoAdjustForNewWidget, type WidgetMinSizes } from '../utils/gridHelpers';
 import { resizeLogger } from '../utils/resizeDebugLogger';
@@ -28,8 +28,6 @@ interface LayoutContextType {
   isWidgetPanelOpen: boolean;
   toggleWidgetPanel: () => void;
   setWidgetPanelOpen: (open: boolean) => void;
-  // Presets
-  loadPreset: (presetName: PresetName) => void;
   // Max rows for viewport constraint
   setMaxRows: (rows: number) => void;
   // Preview widget on hover
@@ -301,19 +299,6 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     setPreviewWidgetState(null);
   }, [layouts, maxRows]);
 
-  const loadPreset = useCallback((presetName: PresetName) => {
-    const preset = LAYOUT_PRESETS[presetName];
-    if (!preset) return;
-
-    // Deep clone to avoid mutation issues
-    const newLayouts = preset.layouts.map(l => ({ ...l }));
-    const newWidgets = preset.widgets.map(w => ({ ...w, props: { ...w.props } }));
-
-    setLayouts(newLayouts);
-    setWidgets(newWidgets);
-    saveState(newLayouts, newWidgets);
-  }, [saveState]);
-
   const toggleMaximizeWidget = useCallback((widgetId: string) => {
     setMaximizedWidgetId(prev => prev === widgetId ? null : widgetId);
   }, []);
@@ -330,7 +315,6 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     isWidgetPanelOpen,
     toggleWidgetPanel,
     setWidgetPanelOpen,
-    loadPreset,
     setMaxRows,
     previewWidget,
     setPreviewWidget,

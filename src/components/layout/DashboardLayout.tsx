@@ -1,6 +1,7 @@
 import React, { useCallback, useRef, useState, useEffect } from 'react';
 import GridLayout from '@eleung/react-grid-layout';
 import { useLayout } from '../../contexts/LayoutContext';
+import { useTheme } from '../../contexts/ThemeContext';
 import { WidgetWrapper } from './WidgetWrapper';
 import { WidgetRegistry } from '../widgets';
 import { GRID_CONFIG, DEFAULT_WIDGET_SIZES } from '../../utils/layoutDefaults';
@@ -29,6 +30,7 @@ export const DashboardLayout: React.FC = () => {
   // Key to force RGL re-mount when swap fails (resets RGL's internal transform state)
   const [rglKey, setRglKey] = useState(0);
   const { layouts, widgets, updateLayouts, removeWidget, addWidget, setMaxRows, previewWidget, newlyAddedWidgetId, maximizedWidgetId, toggleMaximizeWidget } = useLayout();
+  const { isDark } = useTheme();
 
   // Store the last valid layout to revert to if resize pushes widgets outside viewport
   const lastValidLayoutRef = useRef<GridItemLayout[]>(layouts);
@@ -775,14 +777,16 @@ export const DashboardLayout: React.FC = () => {
     if (containerWidth === 0 || !containerRef.current) return;
 
     const colWidth = (containerWidth - GRID_CONFIG.containerPadding[0] * 2 - GRID_CONFIG.margin[0] * (GRID_CONFIG.cols - 1)) / GRID_CONFIG.cols;
+    const cellWidth = colWidth + GRID_CONFIG.margin[0];
+    const cellHeight = GRID_CONFIG.rowHeight + GRID_CONFIG.margin[1];
 
     // Get the cached DOM element reference
     const targetElement = widgetDomMapRef.current.get(widgetId);
     if (!targetElement) return;
 
-    // Calculate new pixel dimensions
-    const newPixelW = gridW * colWidth + (gridW - 1) * GRID_CONFIG.margin[0];
-    const newPixelH = gridH * GRID_CONFIG.rowHeight + (gridH - 1) * GRID_CONFIG.margin[1];
+    // Calculate new pixel dimensions - use cell-based calculation for smooth fractional support
+    const newPixelW = gridW * cellWidth - GRID_CONFIG.margin[0];
+    const newPixelH = gridH * cellHeight - GRID_CONFIG.margin[1];
 
     // Apply size directly for smooth visual feedback
     targetElement.style.width = `${newPixelW}px`;
@@ -827,9 +831,10 @@ export const DashboardLayout: React.FC = () => {
       const handleHorizontal = isHorizontalResize;
       const handleVertical = isVerticalResize;
 
-      // Calculate grid deltas
-      const gridDeltaX = Math.round(mouseDeltaX / cellWidth);
-      const gridDeltaY = Math.round(mouseDeltaY / cellHeight);
+      // Calculate grid deltas - use fractional values for smooth resize
+      // Only round when calculating final positions for other widgets
+      const gridDeltaX = mouseDeltaX / cellWidth;
+      const gridDeltaY = mouseDeltaY / cellHeight;
 
       // HORIZONTAL RESIZE HANDLING (east/west) - GAP FILL FIRST, THEN PUSH
       if (handleHorizontal && !handleVertical) {
@@ -4805,11 +4810,12 @@ export const DashboardLayout: React.FC = () => {
       className="w-full h-full overflow-hidden transition-all duration-300 relative"
       style={{
         height: '100%',
-        backgroundColor: '#ffffff',
-        backgroundImage: `
-          linear-gradient(to right, #f1f1f1 1px, transparent 1px),
-          linear-gradient(to bottom, #f1f1f1 1px, transparent 1px)
-        `,
+        backgroundColor: isDark ? '#0f172a' : '#ffffff',
+        backgroundImage: isDark
+          ? `linear-gradient(to right, #1e293b 1px, transparent 1px),
+             linear-gradient(to bottom, #1e293b 1px, transparent 1px)`
+          : `linear-gradient(to right, #f1f1f1 1px, transparent 1px),
+             linear-gradient(to bottom, #f1f1f1 1px, transparent 1px)`,
         backgroundSize: `${cellWidth}px ${cellHeight}px`,
         backgroundPosition: `${GRID_CONFIG.containerPadding[0]}px ${GRID_CONFIG.containerPadding[1]}px`,
       }}
@@ -4824,8 +4830,8 @@ export const DashboardLayout: React.FC = () => {
           style={previewStyle}
         >
           <div className="text-center">
-            <div className="text-emerald-600 text-sm font-semibold">{previewWidget?.title}</div>
-            <div className="text-emerald-500/70 text-xs mt-1!">{isExternalDrag ? 'Drop to add here' : 'Click to add here'}</div>
+            <div className={`text-sm font-semibold ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>{previewWidget?.title}</div>
+            <div className={`text-xs mt-1! ${isDark ? 'text-emerald-400/70' : 'text-emerald-500/70'}`}>{isExternalDrag ? 'Drop to add here' : 'Click to add here'}</div>
           </div>
         </div>
       )}

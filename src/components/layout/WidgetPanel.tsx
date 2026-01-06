@@ -1,11 +1,12 @@
 import React from 'react';
 import { useLayout } from '../../contexts/LayoutContext';
+import { useTheme } from '../../contexts/ThemeContext';
 import { WidgetDefinitions } from '../widgets';
-import { LAYOUT_PRESETS } from '../../utils/layoutDefaults';
-import type { WidgetType, WidgetDragData, PresetName } from '../../types/gridLayout.types';
+import type { WidgetType, WidgetDragData } from '../../types/gridLayout.types';
 
 export const WidgetPanel: React.FC = () => {
-  const { resetLayout, addWidget, setWidgetPanelOpen, loadPreset, setPreviewWidget } = useLayout();
+  const { resetLayout, addWidget, setWidgetPanelOpen, setPreviewWidget } = useLayout();
+  const { isDark } = useTheme();
 
   const handleDragStart = (e: React.DragEvent, widgetId: string, symbol?: string, widgetName?: string) => {
     // Keep preview visible during drag (don't clear it)
@@ -53,10 +54,6 @@ export const WidgetPanel: React.FC = () => {
     addWidget(type, widgetName || widgetId.toUpperCase(), props);
   };
 
-  const handleLoadPreset = (presetName: PresetName) => {
-    loadPreset(presetName);
-  };
-
   const getWidgetPreviewGradient = (widgetId: string) => {
     if (widgetId.startsWith('chart-')) {
       return 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
@@ -90,15 +87,15 @@ export const WidgetPanel: React.FC = () => {
   };
 
   return (
-    <div className="h-full w-full bg-white overflow-auto">
+    <div className={`h-full w-full overflow-auto transition-colors duration-300 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
       <div className="p-4!">
         {/* Header */}
-        <div className="flex items-center justify-between mb-5! sticky top-0 bg-white py-2! -mt-2! z-10 border-b border-slate-100">
-          <h2 className="text-lg font-semibold text-slate-800">Add Widgets</h2>
+        <div className={`flex items-center justify-between mb-5! sticky top-0 py-2! -mt-2! z-10 border-b transition-colors duration-300 ${isDark ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-100'}`}>
+          <h2 className={`text-lg font-semibold transition-colors ${isDark ? 'text-white' : 'text-slate-800'}`}>Add Widgets</h2>
           <button
             type="button"
             onClick={() => setWidgetPanelOpen(false)}
-            className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100"
+            className={`transition-colors cursor-pointer w-8 h-8 flex items-center justify-center rounded-lg ${isDark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-700' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'}`}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -106,32 +103,8 @@ export const WidgetPanel: React.FC = () => {
           </button>
         </div>
 
-        {/* Layout Presets Section */}
-        <div className="mb-5!">
-          <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3!">Quick Layouts</h3>
-          <div className="grid grid-cols-3 gap-2">
-            {(Object.keys(LAYOUT_PRESETS) as PresetName[]).map((presetKey) => {
-              const preset = LAYOUT_PRESETS[presetKey];
-              return (
-                <button
-                  key={presetKey}
-                  onClick={() => handleLoadPreset(presetKey)}
-                  className="bg-slate-50 hover:bg-slate-100 border border-slate-200 hover:border-emerald-400 rounded-xl p-3! text-center transition-all duration-200 cursor-pointer group"
-                >
-                  <span className="text-xl block mb-1!">{preset.icon}</span>
-                  <span className="text-xs text-slate-600 group-hover:text-emerald-600 font-medium">{preset.name}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Divider */}
-        <div className="border-t border-slate-100 mb-5!"></div>
-
         {/* Available Widgets Section */}
         <div className="mb-5!">
-          <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3!">Widgets</h3>
           <div className="space-y-3!">
             {WidgetDefinitions.map((widget) => {
               return (
@@ -143,7 +116,7 @@ export const WidgetPanel: React.FC = () => {
                 onDragEnd={handleDragEnd}
                 onMouseEnter={() => handleWidgetHover(widget.id, widget.name)}
                 onMouseLeave={handleWidgetLeave}
-                className="bg-white border border-slate-200 rounded-xl transition-all duration-200 overflow-hidden group relative cursor-pointer hover:border-emerald-400 hover:shadow-md"
+                className={`border rounded-xl transition-all duration-200 overflow-hidden group relative cursor-pointer hover:border-emerald-400 hover:shadow-md ${isDark ? 'bg-slate-700 border-slate-600' : 'bg-white border-slate-200'}`}
               >
                 {/* Preview Image */}
                 <div
@@ -154,9 +127,9 @@ export const WidgetPanel: React.FC = () => {
                 </div>
 
                 {/* Widget Info */}
-                <div className="p-3! bg-white">
-                  <h3 className="font-semibold text-slate-700 text-sm mb-0.5!">{widget.name}</h3>
-                  <p className="text-xs text-slate-500 leading-relaxed">{widget.description}</p>
+                <div className={`p-3! transition-colors ${isDark ? 'bg-slate-700' : 'bg-white'}`}>
+                  <h3 className={`font-semibold text-sm mb-0.5! ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{widget.name}</h3>
+                  <p className={`text-xs leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{widget.description}</p>
                 </div>
 
                 {/* Hover indicator */}
@@ -168,10 +141,10 @@ export const WidgetPanel: React.FC = () => {
         </div>
 
         {/* Reset Button */}
-        <div className="pt-4! border-t border-slate-100">
+        <div className={`pt-4! border-t ${isDark ? 'border-slate-700' : 'border-slate-100'}`}>
           <button
             onClick={resetLayout}
-            className="w-full bg-slate-100 border border-slate-200 hover:bg-rose-50 hover:border-rose-300 text-slate-600 hover:text-rose-600 py-2.5! px-4! rounded-xl font-medium transition-all duration-200 text-sm cursor-pointer"
+            className={`w-full border py-2.5! px-4! rounded-xl font-medium transition-all duration-200 text-sm cursor-pointer ${isDark ? 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-rose-900/50 hover:border-rose-700 hover:text-rose-400' : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-rose-50 hover:border-rose-300 hover:text-rose-600'}`}
           >
             Reset Layout
           </button>

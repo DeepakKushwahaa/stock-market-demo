@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTheme } from '../../contexts/ThemeContext';
 
 interface WidgetWrapperProps {
   title: string;
@@ -17,43 +18,27 @@ export const WidgetWrapper: React.FC<WidgetWrapperProps> = ({
   children,
   isHighlighted = false
 }) => {
+  const { isDark } = useTheme();
+
   return (
-    <div className={`h-full flex flex-col bg-white rounded-xl overflow-hidden border shadow-sm hover:shadow-md transition-all duration-200 relative ${
+    <div className={`h-full flex flex-col rounded-xl overflow-hidden border shadow-sm hover:shadow-md transition-all duration-200 relative ${
+      isDark ? 'bg-slate-800' : 'bg-white'
+    } ${
       isHighlighted
         ? 'border-emerald-400 ring-2 ring-emerald-400/50 shadow-lg shadow-emerald-500/20'
-        : 'border-slate-200'
+        : isDark ? 'border-slate-700' : 'border-slate-200'
     }`}>
 
       {/* Header - acts as drag handle (disabled when maximized) */}
-      <div className={`flex items-center justify-between px-3! py-1.5! bg-slate-50 select-none border-b border-slate-100 ${
+      <div className={`flex items-center justify-between px-3! py-1.5! select-none border-b ${
+        isDark ? 'bg-slate-700 border-slate-600' : 'bg-slate-50 border-slate-100'
+      } ${
         isMaximized ? 'cursor-default' : 'widget-drag-handle cursor-move'
       }`}>
-        <h3 className="text-sm font-semibold text-slate-700 truncate pl-2!">{title}</h3>
+        <h3 className={`text-sm font-semibold truncate pl-2! ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{title}</h3>
 
         {/* Action buttons */}
         <div className="flex items-center gap-1">
-          {/* Settings button */}
-          <button
-            type="button"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => e.stopPropagation()}
-            className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
-            title="Widget settings"
-          >
-            <svg
-              className="w-3.5 h-3.5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"
-              />
-            </svg>
-          </button>
           {/* Maximize/Minimize button */}
           <button
             type="button"
@@ -63,7 +48,9 @@ export const WidgetWrapper: React.FC<WidgetWrapperProps> = ({
               e.preventDefault();
               onToggleMaximize();
             }}
-            className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-blue-100 text-slate-400 hover:text-blue-500 transition-colors cursor-pointer"
+            className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors cursor-pointer ${
+              isDark ? 'hover:bg-blue-900/50 text-slate-400 hover:text-blue-400' : 'hover:bg-blue-100 text-slate-400 hover:text-blue-500'
+            }`}
             title={isMaximized ? "Minimize widget" : "Maximize widget"}
           >
             {isMaximized ? (
@@ -107,7 +94,9 @@ export const WidgetWrapper: React.FC<WidgetWrapperProps> = ({
               e.preventDefault();
               onClose();
             }}
-            className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-rose-100 text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+            className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors cursor-pointer ${
+              isDark ? 'hover:bg-rose-900/50 text-slate-400 hover:text-rose-400' : 'hover:bg-rose-100 text-slate-400 hover:text-rose-500'
+            }`}
             title="Close widget"
           >
             <svg
@@ -128,7 +117,7 @@ export const WidgetWrapper: React.FC<WidgetWrapperProps> = ({
       </div>
 
       {/* Widget content */}
-      <div className="flex-1 overflow-hidden bg-white">
+      <div className={`flex-1 overflow-hidden ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
         {children}
       </div>
     </div>
