@@ -721,9 +721,9 @@ function tryPushWidgetsInDirection(
 
 /**
  * Calculate swap between two widgets
- * Widgets always keep their original sizes - positions are adjusted automatically
- * to fit the available space. When direct swap is not possible, tries to push
- * other widgets horizontally to make space.
+ * Direct position swap: Source goes to Target's EXACT position, Target goes to Source's EXACT position
+ * Both widgets keep their original sizes - only positions change
+ * Swap fails if widgets would overlap each other or go outside grid bounds
  * @param layouts - Current layouts
  * @param sourceId - Source widget ID (being dragged)
  * @param targetId - Target widget ID (being swapped with)
@@ -756,46 +756,46 @@ export function calculateSwap(
   }
 
   // Default grid size if not provided
-  const gridCols = cols ?? 12;
-  const gridRows = maxRows ?? 20;
+  const gridCols = cols ?? 24;
+  const gridRows = maxRows ?? 25;
 
-  // SIMPLE SWAP: Source goes to Target's position, Target goes to Source's position
-  // NO pushing of other widgets - if it doesn't fit, swap fails
-
-  // New positions after swap
+  // DIRECT SWAP: Source goes to Target's EXACT position, Target goes to Source's EXACT position
   const sourceNewX = targetLayout.x;
   const sourceNewY = targetLayout.y;
   const targetNewX = sourceLayout.x;
   const targetNewY = sourceLayout.y;
 
-  console.log('[SWAP DEBUG] Trying simple swap:', {
-    source: { from: { x: sourceLayout.x, y: sourceLayout.y }, to: { x: sourceNewX, y: sourceNewY } },
-    target: { from: { x: targetLayout.x, y: targetLayout.y }, to: { x: targetNewX, y: targetNewY } }
+  console.log('[SWAP DEBUG] Direct swap positions:', {
+    source: { from: { x: sourceLayout.x, y: sourceLayout.y }, to: { x: sourceNewX, y: sourceNewY }, size: { w: sourceLayout.w, h: sourceLayout.h } },
+    target: { from: { x: targetLayout.x, y: targetLayout.y }, to: { x: targetNewX, y: targetNewY }, size: { w: targetLayout.w, h: targetLayout.h } }
   });
 
   // Check 1: Source at target's position - within grid bounds?
-  if (sourceNewX + sourceLayout.w > gridCols || sourceNewY + sourceLayout.h > gridRows) {
+  if (sourceNewX + sourceLayout.w > gridCols || sourceNewY + sourceLayout.h > gridRows ||
+      sourceNewX < 0 || sourceNewY < 0) {
     console.log('[SWAP DEBUG] Source would exceed grid bounds at target position');
     return null;
   }
 
   // Check 2: Target at source's position - within grid bounds?
-  if (targetNewX + targetLayout.w > gridCols || targetNewY + targetLayout.h > gridRows) {
+  if (targetNewX + targetLayout.w > gridCols || targetNewY + targetLayout.h > gridRows ||
+      targetNewX < 0 || targetNewY < 0) {
     console.log('[SWAP DEBUG] Target would exceed grid bounds at source position');
     return null;
   }
 
-  // Create zones for new positions
+  // Create zones for NEW positions (after swap)
   const sourceNewZone: GridZone = { x: sourceNewX, y: sourceNewY, w: sourceLayout.w, h: sourceLayout.h };
   const targetNewZone: GridZone = { x: targetNewX, y: targetNewY, w: targetLayout.w, h: targetLayout.h };
 
   // Check 3: Do the swapped widgets overlap each other? (due to different sizes)
   if (zonesOverlap(sourceNewZone, targetNewZone)) {
-    console.log('[SWAP DEBUG] Swapped widgets would overlap each other - sizes incompatible');
+    console.log('[SWAP DEBUG] Swapped widgets would overlap each other - swap not possible');
     return null;
   }
 
   // Check 4: Do swapped widgets overlap any OTHER widget?
+  // IMPORTANT: We check against the FINAL state where both widgets have moved
   for (const layout of layouts) {
     if (layout.i === sourceId || layout.i === targetId) continue;
 
@@ -812,8 +812,8 @@ export function calculateSwap(
     }
   }
 
-  // All checks passed - simple swap is possible!
-  console.log('[SWAP DEBUG] Simple swap successful - no other widgets affected');
+  // All checks passed - direct swap is possible!
+  console.log('[SWAP DEBUG] Direct swap successful!');
 
   return layouts.map(l => {
     if (l.i === sourceId) {
@@ -823,6 +823,259 @@ export function calculateSwap(
     }
     return l;
   });
+}
+
+/**
+ * Calculate smart swap between two widgets
+ * Tries multiple strategies:
+ * 1. Direct position swap (source ↔ target positions)
+ * 2. If direct fails, try fitting both in combined bounding box
+ * 3. Try placing source at target's position, target adjacent to it
+ */
+export function calculateSmartSwap(
+  layouts: GridItemLayout[],
+  sourceId: string,
+  targetId: string,
+  cols?: number,
+  maxRows?: number
+): GridItemLayout[] | null {
+  const sourceLayout = layouts.find(l => l.i === sourceId);
+  const targetLayout = layouts.find(l => l.i === targetId);
+
+  console.log('[SMART SWAP] calculateSmartSwap called:', {
+    sourceId, targetId,
+    source: sourceLayout ? { x: sourceLayout.x, y: sourceLayout.y, w: sourceLayout.w, h: sourceLayout.h } : null,
+    target: targetLayout ? { x: targetLayout.x, y: targetLayout.y, w: targetLayout.w, h: targetLayout.h } : null,
+    cols, maxRows,
+    allLayouts: layouts.map(l => ({ i: l.i, x: l.x, y: l.y, w: l.w, h: l.h }))
+  });
+
+  if (!sourceLayout || !targetLayout) {
+    console.log('[SMART SWAP] Source or target not found');
+    return null;
+  }
+
+  const gridCols = cols ?? 24;
+  const gridRows = maxRows ?? 25;
+
+  // Helper to check if position is valid (no overlaps with other widgets)
+  const isValidPosition = (x: number, y: number, w: number, h: number, excludeIds: string[]): boolean => {
+    if (x < 0 || y < 0 || x + w > gridCols || y + h > gridRows) {
+      console.log('[SMART SWAP] Position invalid - out of bounds:', { x, y, w, h, gridCols, gridRows });
+      return false;
+    }
+
+    const zone: GridZone = { x, y, w, h };
+    for (const layout of layouts) {
+      if (excludeIds.includes(layout.i)) continue;
+      const otherZone: GridZone = { x: layout.x, y: layout.y, w: layout.w, h: layout.h };
+      if (zonesOverlap(zone, otherZone)) {
+        console.log('[SMART SWAP] Position invalid - overlaps with:', layout.i, otherZone);
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // STRATEGY 1: Direct swap
+  const directResult = calculateSwap(layouts, sourceId, targetId, cols, maxRows);
+  if (directResult) {
+    console.log('[SMART SWAP] Strategy 1 (direct swap) succeeded');
+    return directResult;
+  }
+
+  console.log('[SMART SWAP] Direct swap failed, trying alternative strategies...');
+
+  // STRATEGY 2: Try fitting both widgets in different arrangements
+  // Calculate combined bounding box
+  const bbox = {
+    left: Math.min(sourceLayout.x, targetLayout.x),
+    top: Math.min(sourceLayout.y, targetLayout.y),
+    right: Math.max(sourceLayout.x + sourceLayout.w, targetLayout.x + targetLayout.w),
+    bottom: Math.max(sourceLayout.y + sourceLayout.h, targetLayout.y + targetLayout.h),
+  };
+
+  // Check if widgets are mostly horizontal or vertical to each other
+  const sourceCenter = { x: sourceLayout.x + sourceLayout.w / 2, y: sourceLayout.y + sourceLayout.h / 2 };
+  const targetCenter = { x: targetLayout.x + targetLayout.w / 2, y: targetLayout.y + targetLayout.h / 2 };
+  const isMoreHorizontal = Math.abs(sourceCenter.x - targetCenter.x) > Math.abs(sourceCenter.y - targetCenter.y);
+
+  type Pos = { sourceX: number; sourceY: number; targetX: number; targetY: number };
+  const arrangements: Pos[] = [];
+
+  if (isMoreHorizontal) {
+    // Try horizontal swaps - source and target side by side
+    // Source on right, target on left
+    if (sourceLayout.w + targetLayout.w <= bbox.right - bbox.left + Math.min(sourceLayout.w, targetLayout.w)) {
+      arrangements.push({
+        sourceX: bbox.left + targetLayout.w,
+        sourceY: targetLayout.y,
+        targetX: bbox.left,
+        targetY: sourceLayout.y,
+      });
+      arrangements.push({
+        sourceX: bbox.left,
+        sourceY: targetLayout.y,
+        targetX: bbox.left + sourceLayout.w,
+        targetY: sourceLayout.y,
+      });
+    }
+  } else {
+    // Try vertical swaps - source and target stacked
+    // Source on bottom, target on top
+    if (sourceLayout.h + targetLayout.h <= bbox.bottom - bbox.top + Math.min(sourceLayout.h, targetLayout.h)) {
+      arrangements.push({
+        sourceX: targetLayout.x,
+        sourceY: bbox.top + targetLayout.h,
+        targetX: sourceLayout.x,
+        targetY: bbox.top,
+      });
+      arrangements.push({
+        sourceX: targetLayout.x,
+        sourceY: bbox.top,
+        targetX: sourceLayout.x,
+        targetY: bbox.top + sourceLayout.h,
+      });
+    }
+  }
+
+  // Try each arrangement
+  for (const arr of arrangements) {
+    const sourceZone: GridZone = { x: arr.sourceX, y: arr.sourceY, w: sourceLayout.w, h: sourceLayout.h };
+    const targetZone: GridZone = { x: arr.targetX, y: arr.targetY, w: targetLayout.w, h: targetLayout.h };
+
+    // Check if widgets would overlap each other
+    if (zonesOverlap(sourceZone, targetZone)) continue;
+
+    // Check if both positions are valid
+    if (!isValidPosition(arr.sourceX, arr.sourceY, sourceLayout.w, sourceLayout.h, [sourceId, targetId])) continue;
+    if (!isValidPosition(arr.targetX, arr.targetY, targetLayout.w, targetLayout.h, [sourceId, targetId])) continue;
+
+    console.log('[SMART SWAP] Strategy 2 succeeded with arrangement:', arr);
+    return layouts.map(l => {
+      if (l.i === sourceId) return { ...l, x: arr.sourceX, y: arr.sourceY };
+      if (l.i === targetId) return { ...l, x: arr.targetX, y: arr.targetY };
+      return l;
+    });
+  }
+
+  // STRATEGY 3: Place source at target's position, try to fit target nearby
+  // Generate many possible positions for target widget
+  const nearbyPositions: Array<{ x: number; y: number }> = [];
+
+  // At source's original position (might work if source is smaller)
+  nearbyPositions.push({ x: sourceLayout.x, y: sourceLayout.y });
+
+  // Right of source's new position (target.x + source.w)
+  nearbyPositions.push({ x: targetLayout.x + sourceLayout.w, y: targetLayout.y });
+
+  // Left of source's new position
+  nearbyPositions.push({ x: targetLayout.x - targetLayout.w, y: targetLayout.y });
+
+  // Below source's new position
+  nearbyPositions.push({ x: targetLayout.x, y: targetLayout.y + sourceLayout.h });
+
+  // Above source's new position
+  nearbyPositions.push({ x: targetLayout.x, y: targetLayout.y - targetLayout.h });
+
+  // Right of source's original position
+  nearbyPositions.push({ x: sourceLayout.x + sourceLayout.w, y: sourceLayout.y });
+
+  // Below source's original position
+  nearbyPositions.push({ x: sourceLayout.x, y: sourceLayout.y + sourceLayout.h });
+
+  // Above source's original position
+  nearbyPositions.push({ x: sourceLayout.x, y: sourceLayout.y - targetLayout.h });
+
+  // Left of source's original position
+  nearbyPositions.push({ x: sourceLayout.x - targetLayout.w, y: sourceLayout.y });
+
+  console.log('[SMART SWAP] Strategy 3 - trying', nearbyPositions.length, 'nearby positions');
+  console.log('[SMART SWAP] Source at target pos check:', {
+    targetPos: { x: targetLayout.x, y: targetLayout.y },
+    sourceSize: { w: sourceLayout.w, h: sourceLayout.h }
+  });
+
+  // Check if source fits at target's position
+  if (isValidPosition(targetLayout.x, targetLayout.y, sourceLayout.w, sourceLayout.h, [sourceId, targetId])) {
+    console.log('[SMART SWAP] Source CAN fit at target position, checking nearby positions for target');
+
+    for (const pos of nearbyPositions) {
+      const sourceZone: GridZone = { x: targetLayout.x, y: targetLayout.y, w: sourceLayout.w, h: sourceLayout.h };
+      const targetZone: GridZone = { x: pos.x, y: pos.y, w: targetLayout.w, h: targetLayout.h };
+
+      console.log('[SMART SWAP] Checking target at:', pos, 'with size:', { w: targetLayout.w, h: targetLayout.h });
+
+      if (zonesOverlap(sourceZone, targetZone)) {
+        console.log('[SMART SWAP] Target would overlap with source at this position');
+        continue;
+      }
+      if (!isValidPosition(pos.x, pos.y, targetLayout.w, targetLayout.h, [sourceId, targetId])) {
+        continue;
+      }
+
+      console.log('[SMART SWAP] Strategy 3 succeeded - source at target pos, target at:', pos);
+      return layouts.map(l => {
+        if (l.i === sourceId) return { ...l, x: targetLayout.x, y: targetLayout.y };
+        if (l.i === targetId) return { ...l, x: pos.x, y: pos.y };
+        return l;
+      });
+    }
+  } else {
+    console.log('[SMART SWAP] Source CANNOT fit at target position');
+  }
+
+  // STRATEGY 4: Place target at source's position, try to fit source nearby
+  console.log('[SMART SWAP] Strategy 4 - trying reverse: target at source pos');
+  console.log('[SMART SWAP] Target at source pos check:', {
+    sourcePos: { x: sourceLayout.x, y: sourceLayout.y },
+    targetSize: { w: targetLayout.w, h: targetLayout.h }
+  });
+
+  if (isValidPosition(sourceLayout.x, sourceLayout.y, targetLayout.w, targetLayout.h, [sourceId, targetId])) {
+    console.log('[SMART SWAP] Target CAN fit at source position, checking nearby positions for source');
+
+    // Generate nearby positions for source
+    const sourceNearbyPositions = [
+      // At target's original position
+      { x: targetLayout.x, y: targetLayout.y },
+      // Right of target's new position (source.x + target.w)
+      { x: sourceLayout.x + targetLayout.w, y: sourceLayout.y },
+      // Below target's new position
+      { x: sourceLayout.x, y: sourceLayout.y + targetLayout.h },
+      // Right of target's original position
+      { x: targetLayout.x + targetLayout.w, y: targetLayout.y },
+      // Below target's original position
+      { x: targetLayout.x, y: targetLayout.y + targetLayout.h },
+    ];
+
+    for (const pos of sourceNearbyPositions) {
+      const targetZone: GridZone = { x: sourceLayout.x, y: sourceLayout.y, w: targetLayout.w, h: targetLayout.h };
+      const sourceZone: GridZone = { x: pos.x, y: pos.y, w: sourceLayout.w, h: sourceLayout.h };
+
+      console.log('[SMART SWAP] Checking source at:', pos, 'with size:', { w: sourceLayout.w, h: sourceLayout.h });
+
+      if (zonesOverlap(sourceZone, targetZone)) {
+        console.log('[SMART SWAP] Source would overlap with target at this position');
+        continue;
+      }
+      if (!isValidPosition(pos.x, pos.y, sourceLayout.w, sourceLayout.h, [sourceId, targetId])) {
+        continue;
+      }
+
+      console.log('[SMART SWAP] Strategy 4 succeeded - target at source pos, source at:', pos);
+      return layouts.map(l => {
+        if (l.i === sourceId) return { ...l, x: pos.x, y: pos.y };
+        if (l.i === targetId) return { ...l, x: sourceLayout.x, y: sourceLayout.y };
+        return l;
+      });
+    }
+  } else {
+    console.log('[SMART SWAP] Target CANNOT fit at source position');
+  }
+
+  console.log('[SMART SWAP] All strategies failed');
+  return null;
 }
 
 /**

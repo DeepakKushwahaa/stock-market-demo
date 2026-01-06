@@ -89,8 +89,8 @@ body {
 // Resize handles
 .react-resizable-handle {
   position: absolute;
-  width: 20px;
-  height: 20px;
+  width: 10px;
+  height: 10px;
 
   &::after {
     content: '';
@@ -112,12 +112,14 @@ body {
   bottom: 0;
   right: 0;
   cursor: se-resize;
+    opacity: 0;
 }
 
 .react-resizable-handle-sw {
   bottom: 0;
   left: 0;
   cursor: sw-resize;
+    opacity: 0;
 
   &::after {
     right: auto;
@@ -135,6 +137,7 @@ body {
   top: 0;
   right: 0;
   cursor: ne-resize;
+  opacity: 0;
 
   &::after {
     bottom: auto;
@@ -152,6 +155,7 @@ body {
   top: 0;
   left: 0;
   cursor: nw-resize;
+  opacity: 0;
 
   &::after {
     bottom: auto;
@@ -169,80 +173,58 @@ body {
   }
 }
 
+// East handle - full height on right edge
 .react-resizable-handle-e {
   right: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 0 !important;
+  width: 10px !important;
+  height: 100% !important;
+  transform: rotate(0) !important;
   cursor: e-resize;
 
   &::after {
-    width: 4px;
-    height: 20px;
-    border: none;
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 2px;
-  }
-
-  &:hover::after {
-    background: #4a9eff;
+    display: none;
   }
 }
 
+// West handle - full height on left edge
 .react-resizable-handle-w {
   left: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 0 !important;
+  width: 10px !important;
+  height: 100% !important;
+  transform: rotate(0) !important;
   cursor: w-resize;
 
   &::after {
-    width: 4px;
-    height: 20px;
-    right: auto;
-    left: 3px;
-    border: none;
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 2px;
-  }
-
-  &:hover::after {
-    background: #4a9eff;
+    display: none;
   }
 }
 
+// North handle - full width on top edge
 .react-resizable-handle-n {
   top: 0;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0 !important;
+  width: 100% !important;
+  transform: rotate(0) !important;
+  height: 10px !important;
   cursor: n-resize;
 
   &::after {
-    width: 20px;
-    height: 4px;
-    border: none;
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 2px;
-  }
-
-  &:hover::after {
-    background: #4a9eff;
+    display: none;
   }
 }
 
+// South handle - full width on bottom edge
 .react-resizable-handle-s {
   bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0 !important;
+  width: 100% !important;
+  transform: rotate(0) !important;
+  height: 10px !important;
   cursor: s-resize;
 
   &::after {
-    width: 20px;
-    height: 4px;
-    border: none;
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 2px;
-  }
-
-  &:hover::after {
-    background: #4a9eff;
+    display: none;
   }
 }
