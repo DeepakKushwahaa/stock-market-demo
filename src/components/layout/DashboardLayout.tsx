@@ -27,6 +27,8 @@ export const DashboardLayout: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
+  // Track if container dimensions have been initialized (for initial viewport adjustment)
+  const [isContainerReady, setIsContainerReady] = useState(false);
   // Key to force RGL re-mount when swap fails (resets RGL's internal transform state)
   const [rglKey, setRglKey] = useState(0);
   const { layouts, widgets, updateLayouts, removeWidget, addWidget, setMaxRows, previewWidget, newlyAddedWidgetId, maximizedWidgetId, toggleMaximizeWidget } = useLayout();
@@ -98,12 +100,137 @@ export const DashboardLayout: React.FC = () => {
     }
   }, [maxRows, setMaxRows]);
 
+  // Viewport resize handler: shrink widgets that go outside viewport when screen is resized smaller
+  // Also runs on initial load once container dimensions are ready
+  useEffect(() => {
+    // Skip if no layouts, maxRows not calculated yet, or container not ready
+    if (layouts.length === 0 || maxRows <= 0 || !isContainerReady || isResizingRef.current || isDraggingRef.current) {
+      return;
+    }
+
+    // Check if any widget extends beyond viewport
+    const widgetsOutsideViewport = layouts.filter(item => item.y + item.h > maxRows);
+
+    if (widgetsOutsideViewport.length === 0) {
+      return; // All widgets fit, nothing to do
+    }
+
+    // Calculate how much we need to shrink to fit everything
+    // Strategy: Shrink widgets that extend beyond viewport, respecting minH
+    const adjustedLayouts = layouts.map(item => ({ ...item }));
+
+    // Sort by Y position (bottom-most first) to handle from bottom up
+    const sortedByBottom = [...adjustedLayouts].sort((a, b) => (b.y + b.h) - (a.y + a.h));
+
+    let layoutChanged = false;
+
+    for (const item of sortedByBottom) {
+      const itemBottom = item.y + item.h;
+
+      if (itemBottom > maxRows) {
+        // Widget extends beyond viewport
+        const overflow = itemBottom - maxRows;
+        const minH = item.minH || 6; // Default minH from layoutDefaults
+        const currentH = item.h;
+
+        // First try: shrink the widget height
+        const newH = Math.max(minH, currentH - overflow);
+        const heightReduction = currentH - newH;
+
+        if (heightReduction > 0) {
+          item.h = newH;
+          layoutChanged = true;
+        }
+
+        // If still outside after shrinking, try moving up
+        const newItemBottom = item.y + item.h;
+        if (newItemBottom > maxRows) {
+          const remainingOverflow = newItemBottom - maxRows;
+          const newY = Math.max(0, item.y - remainingOverflow);
+
+          if (newY !== item.y) {
+            item.y = newY;
+            layoutChanged = true;
+          }
+        }
+      }
+    }
+
+    // After adjustments, check for overlaps and resolve them
+    // This is a simplified overlap resolution - push widgets up if they overlap
+    if (layoutChanged) {
+      // Sort by Y position for overlap resolution
+      adjustedLayouts.sort((a, b) => a.y - b.y);
+
+      // Resolve overlaps by checking each pair
+      for (let i = 0; i < adjustedLayouts.length; i++) {
+        for (let j = i + 1; j < adjustedLayouts.length; j++) {
+          const itemA = adjustedLayouts[i];
+          const itemB = adjustedLayouts[j];
+
+          // Check horizontal overlap
+          const horizontalOverlap = !(itemA.x + itemA.w <= itemB.x || itemB.x + itemB.w <= itemA.x);
+
+          if (horizontalOverlap) {
+            // Check vertical overlap
+            const verticalOverlap = !(itemA.y + itemA.h <= itemB.y || itemB.y + itemB.h <= itemA.y);
+
+            if (verticalOverlap) {
+              // Widgets overlap - shrink the lower one (itemB) if possible
+              const overlapAmount = (itemA.y + itemA.h) - itemB.y;
+              if (overlapAmount > 0) {
+                const minHB = itemB.minH || 6;
+                const maxShrink = itemB.h - minHB;
+
+                if (maxShrink >= overlapAmount) {
+                  // Shrink itemB
+                  itemB.y = itemA.y + itemA.h;
+                  // Check if this pushes it outside viewport
+                  if (itemB.y + itemB.h > maxRows) {
+                    itemB.h = Math.max(minHB, maxRows - itemB.y);
+                  }
+                } else {
+                  // Move itemB down and shrink
+                  itemB.y = itemA.y + itemA.h;
+                  if (itemB.y + itemB.h > maxRows) {
+                    itemB.h = Math.max(minHB, maxRows - itemB.y);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Final validation: ensure all widgets are within viewport
+      const allFit = adjustedLayouts.every(item => item.y + item.h <= maxRows && item.y >= 0);
+
+      if (allFit) {
+        // Check if layout actually changed
+        const hasChanges = layouts.some((original) => {
+          const adjusted = adjustedLayouts.find(a => a.i === original.i);
+          return adjusted && (adjusted.y !== original.y || adjusted.h !== original.h);
+        });
+
+        if (hasChanges) {
+          updateLayouts(adjustedLayouts);
+        }
+      }
+    }
+  }, [maxRows, layouts, updateLayouts, isContainerReady]);
+
   // Track container dimensions for GridLayout
   useEffect(() => {
     const updateDimensions = () => {
       if (containerRef.current) {
-        setContainerWidth(containerRef.current.offsetWidth);
-        setContainerHeight(containerRef.current.offsetHeight);
+        const width = containerRef.current.offsetWidth;
+        const height = containerRef.current.offsetHeight;
+        setContainerWidth(width);
+        setContainerHeight(height);
+        // Mark container as ready once we have valid dimensions
+        if (width > 0 && height > 0) {
+          setIsContainerReady(true);
+        }
       }
     };
 
@@ -610,8 +737,19 @@ export const DashboardLayout: React.FC = () => {
         return;
       }
 
-      const maxDimensions = calculateMaxDimensions(constrainedLayouts);
-      const validLayout = constrainedLayouts.map(item => {
+      // CRITICAL: Snap all values to integers before applying
+      // During resize we use fractional values for smooth visual feedback,
+      // but final layout must have integer grid positions
+      const snappedLayouts = constrainedLayouts.map(item => ({
+        ...item,
+        x: Math.round(item.x),
+        y: Math.round(item.y),
+        w: Math.round(item.w),
+        h: Math.round(item.h),
+      }));
+
+      const maxDimensions = calculateMaxDimensions(snappedLayouts);
+      const validLayout = snappedLayouts.map(item => {
         const widget = widgets.find(w => w.i === item.i);
         const sizes = widget ? DEFAULT_WIDGET_SIZES[widget.type] : DEFAULT_WIDGET_SIZES.chart;
         const dimensions = maxDimensions.get(item.i) ?? { maxH: maxRows - item.y, maxW: cols - item.x };
@@ -640,15 +778,18 @@ export const DashboardLayout: React.FC = () => {
 
     setResizePreview(null);
 
-    // Feature 2: Enforce minimum dimensions
+    // Feature 2: Enforce minimum dimensions and snap to integers
     let validatedLayout = newLayout.map(item => {
       const widget = widgets.find(w => w.i === item.i);
       const widgetType = widget?.type || 'chart';
       const minSizes = DEFAULT_WIDGET_SIZES[widgetType];
       return {
         ...item,
-        w: Math.max(item.w, minSizes.minW),
-        h: Math.max(item.h, minSizes.minH),
+        // Snap to integers - fractional values from smooth resize must be rounded
+        x: Math.round(item.x),
+        y: Math.round(item.y),
+        w: Math.max(Math.round(item.w), minSizes.minW),
+        h: Math.max(Math.round(item.h), minSizes.minH),
       };
     });
 
@@ -2169,7 +2310,6 @@ export const DashboardLayout: React.FC = () => {
         let validatedPositions: Map<string, number> = new Map();
 
         if (actualPush > 0 && widgetsToPush.length > 0) {
-
           // Sort widgets for cascade simulation
           const sortedForSim = [...widgetsToPush].sort((a, b) => isSouthResize ? a.y - b.y : b.y - a.y);
 
@@ -2561,7 +2701,6 @@ export const DashboardLayout: React.FC = () => {
         // Clamp to viewport (using let so we can further limit based on available push space)
         let clampedW = Math.min(requestedW, isWestResize ? resizingLayout.x + resizingLayout.w : GRID_CONFIG.cols - resizingLayout.x);
         let clampedH = Math.min(requestedH, isNorthResize ? resizingLayout.y + resizingLayout.h : maxRows - resizingLayout.y);
-        const clampedX = isWestResize ? resizingLayout.x + resizingLayout.w - clampedW : resizingLayout.x;
 
         // Helper functions
         const hasVerticalOverlapBetween = (w1: { y: number; h: number }, w2: { y: number; h: number }) => {
@@ -3350,7 +3489,13 @@ export const DashboardLayout: React.FC = () => {
         // Calculate vertical push with FULL CASCADING logic (same as vertical-only resize)
         // INCLUDING GAP FILL - first fill gap to first widget, then push
         const vertPositions: Map<string, number> = new Map();
-        const resizingBoundsForVert = { x: clampedX, w: clampedW };
+
+        // For corner resize, use EXPANDED horizontal bounds for vertical chain detection
+        // This ensures widgets that come into horizontal overlap due to horizontal expansion
+        // are properly included in the vertical push chain
+        // Calculate the expanded X position (for west resize, X decreases as width increases)
+        const expandedX = isWestResize ? resizingLayout.x + resizingLayout.w - clampedW : resizingLayout.x;
+        const resizingBoundsForVert = { x: expandedX, w: clampedW };
 
         // Use ORIGINAL edges (same as vertical-only resize)
         const originalBottomEdge = resizingLayout.y + resizingLayout.h;
@@ -3416,31 +3561,64 @@ export const DashboardLayout: React.FC = () => {
             const pushedIdsVert = new Set(widgetsToPushVert.map(w => w.id));
             const nonChainWidgetsVert = allWidgets.filter(w => !pushedIdsVert.has(w.id));
 
-            // Calculate available push space (INCLUDING gaps between widgets in chain - same as vertical resize)
-            if (widgetsToPushVert.length > 0) {
-              // There are widgets to push
-              if (pushAmountVert > 0) {
-                // Sort widgets top to bottom
-                const sortedWidgets = [...widgetsToPushVert].sort((a, b) => a.y - b.y);
+            // Calculate available push space - SAME AS VERTICAL-ONLY RESIZE
+            // Group widgets into horizontal chains and calculate space per chain
+            let availablePushSpace = 0;
 
-                // Calculate total gaps between widgets in the chain
-                let totalGaps = 0;
-                for (let i = 0; i < sortedWidgets.length - 1; i++) {
-                  const currentBottomEdge = sortedWidgets[i].y + sortedWidgets[i].h;
-                  const nextTopEdge = sortedWidgets[i + 1].y;
-                  const gap = nextTopEdge - currentBottomEdge;
-                  if (gap > 0) {
-                    totalGaps += gap;
+            if (pushAmountVert > 0 && widgetsToPushVert.length > 0) {
+              // Group widgets into horizontal chains (widgets with horizontal overlap cascade together)
+              const verticalChains: Array<Array<typeof widgetsToPushVert[0]>> = [];
+              const assignedVertical = new Set<string>();
+
+              for (const widget of widgetsToPushVert) {
+                if (assignedVertical.has(widget.id)) continue;
+
+                const chain = [widget];
+                assignedVertical.add(widget.id);
+
+                // BFS to find all widgets that have horizontal overlap with this chain
+                let idx = 0;
+                while (idx < chain.length) {
+                  const current = chain[idx];
+                  for (const other of widgetsToPushVert) {
+                    if (assignedVertical.has(other.id)) continue;
+                    // Check horizontal overlap
+                    const hasHorzOverlap = !(current.x + current.w <= other.x || current.x >= other.x + other.w);
+                    if (hasHorzOverlap) {
+                      chain.push(other);
+                      assignedVertical.add(other.id);
+                    }
                   }
+                  idx++;
                 }
 
-                // Space at the end (viewport edge - bottommost widget)
-                const bottommostEdge = Math.max(...widgetsToPushVert.map(w => w.y + w.h));
-                let blockingEdge = maxRows;
+                verticalChains.push(chain);
+              }
 
-                // Check for non-chain widgets blocking
+              // Calculate available space for each chain
+              const chainSpaces: number[] = [];
+
+              for (const chain of verticalChains) {
+                // Sort chain by y position (top to bottom)
+                chain.sort((a, b) => a.y - b.y);
+
+                // Calculate gaps between widgets in this chain
+                let totalGapsInChain = 0;
+                for (let i = 0; i < chain.length - 1; i++) {
+                  const currentBottomEdge = chain[i].y + chain[i].h;
+                  const nextTopEdge = chain[i + 1].y;
+                  const gap = nextTopEdge - currentBottomEdge;
+                  if (gap > 0) totalGapsInChain += gap;
+                }
+
+                // Find bottommost widget in this chain
+                const bottommostWidget = chain[chain.length - 1];
+                const bottommostEdge = bottommostWidget.y + bottommostWidget.h;
+
+                // Find what blocks this chain (viewport or non-chain widget with horizontal overlap)
+                let blockingEdge = maxRows;
                 for (const nonChain of nonChainWidgetsVert) {
-                  const hasOverlapWithChain = widgetsToPushVert.some(chainWidget =>
+                  const hasOverlapWithChain = chain.some(chainWidget =>
                     hasHorizontalOverlapBetween(chainWidget, nonChain)
                   );
                   if (hasOverlapWithChain && nonChain.y >= bottommostEdge) {
@@ -3448,56 +3626,23 @@ export const DashboardLayout: React.FC = () => {
                   }
                 }
 
+                // Gap from resizing widget to first widget in chain
+                const firstWidget = chain[0];
+                const gapToFirst = firstWidget.y - originalBottomEdge;
+
                 const spaceAtEnd = blockingEdge - bottommostEdge;
-                const availablePushSpace = totalGaps + spaceAtEnd;
-
-                pushAmountVert = Math.min(pushAmountVert, availablePushSpace);
-
-                // Check collision with non-chain widgets
-                for (const pushedWidget of widgetsToPushVert) {
-                  const pushedNewY = pushedWidget.y + pushAmountVert;
-                  const clampedPushedY = Math.min(pushedNewY, maxRows - pushedWidget.h);
-
-                  for (const nonChain of nonChainWidgetsVert) {
-                    const pushedTopEdge = clampedPushedY;
-                    const pushedBottomEdge = clampedPushedY + pushedWidget.h;
-                    const nonChainTopEdge = nonChain.y;
-                    const nonChainBottomEdge = nonChain.y + nonChain.h;
-
-                    const hasVertOverlap = !(pushedBottomEdge <= nonChainTopEdge || pushedTopEdge >= nonChainBottomEdge);
-                    const hasHorzOverlap = !(pushedWidget.x + pushedWidget.w <= nonChain.x || pushedWidget.x >= nonChain.x + nonChain.w);
-
-                    if (hasHorzOverlap && hasVertOverlap) {
-                      const maxPushedY = nonChainTopEdge - pushedWidget.h;
-                      const maxPush = Math.max(0, maxPushedY - pushedWidget.y);
-                      if (maxPush < pushAmountVert) {
-
-                        pushAmountVert = maxPush;
-                      }
-                    }
-                  }
-                }
-
-                // Also check if resizing widget itself collides with non-chain widgets
-                const resizingNewBottomEdge = resizingLayout.y + resizingLayout.h + gapFillVert + pushAmountVert;
-                for (const nonChain of nonChainWidgetsVert) {
-                  const hasVertOverlap = !(resizingNewBottomEdge <= nonChain.y || resizingLayout.y >= nonChain.y + nonChain.h);
-                  const hasHorzOverlap = hasHorizontalOverlapBetween(resizingBoundsForVert, nonChain);
-
-                  if (hasHorzOverlap && hasVertOverlap) {
-                    const maxH = nonChain.y - resizingLayout.y;
-                    const maxAchievable = Math.max(resizingLayout.h, maxH);
-                    const newPushAmount = Math.max(0, maxAchievable - resizingLayout.h - gapFillVert);
-                    if (newPushAmount < pushAmountVert) {
-
-                      pushAmountVert = newPushAmount;
-                    }
-                  }
-                }
+                const chainSpace = Math.max(0, gapToFirst) + totalGapsInChain + spaceAtEnd;
+                chainSpaces.push(chainSpace);
               }
 
-              // CRITICAL: Dynamic blocking simulation for CORNER SOUTH VERTICAL
+              // Available space is the MINIMUM across all chains
+              availablePushSpace = chainSpaces.length > 0 ? Math.min(...chainSpaces) : 0;
 
+              pushAmountVert = Math.min(pushAmountVert, availablePushSpace);
+            }
+
+            // CRITICAL: Dynamic blocking simulation for CORNER SOUTH VERTICAL
+            if (widgetsToPushVert.length > 0) {
               const sortedForSimSouth = [...widgetsToPushVert].sort((a, b) => a.y - b.y);
               const maxAllowedExpansionSouth = gapFillVert + pushAmountVert;
 
@@ -3646,7 +3791,6 @@ export const DashboardLayout: React.FC = () => {
               }
 
               if (clampedH > newClampedH) {
-
                 clampedH = newClampedH;
               }
             } else {
@@ -4843,58 +4987,41 @@ export const DashboardLayout: React.FC = () => {
         return (
           <div
             key={`zone-${index}`}
-            className="absolute pointer-events-none z-40 border-2 border-dashed border-emerald-300 bg-emerald-100/50 rounded-xl"
+            className="absolute pointer-events-none z-40 bg-emerald-400/30"
             style={zoneStyle}
           />
         );
       })}
 
       {/* Feature 4: Swap preview during drag when no empty space available */}
-      {swapPreview && (
-        <>
-          {/* Source widget's new position (where it will go) */}
-          <div
-            className="absolute pointer-events-none z-50 border-2 border-solid border-violet-400 bg-violet-100/50 rounded-xl flex items-center justify-center animate-pulse"
-            style={getZoneStyle(swapPreview.sourceNewPos) || undefined}
-          >
-            <span className="text-violet-600 text-sm font-medium">Swap here</span>
-          </div>
-          {/* Target widget's new position (where it will move to) */}
-          <div
-            className="absolute pointer-events-none z-50 border-2 border-solid border-amber-400 bg-amber-100/50 rounded-xl flex items-center justify-center animate-pulse"
-            style={getZoneStyle(swapPreview.targetNewPos) || undefined}
-          >
-            <span className="text-amber-600 text-sm font-medium">Moving here</span>
-          </div>
-        </>
-      )}
-
-      {/* Feature 6: Resize space management preview */}
-      {resizePreview && resizePreview.newLayouts.map(layout => {
-        const originalLayout = layouts.find(l => l.i === layout.i);
-        // Only show preview for widgets that will move or change size
-        if (!originalLayout) return null;
-        const hasMoved = layout.x !== originalLayout.x || layout.y !== originalLayout.y;
-        const hasResized = layout.w !== originalLayout.w || layout.h !== originalLayout.h;
-        if (!hasMoved && !hasResized) return null;
-
-        const isMoved = resizePreview.movedWidgets.includes(layout.i);
-        const isShrunk = resizePreview.shrunkWidgets.includes(layout.i);
-
+      {swapPreview && (() => {
+        const sourceWidget = widgets.find(w => w.i === swapPreview.sourceId);
+        const targetWidget = widgets.find(w => w.i === swapPreview.targetId);
+        const sourceName = sourceWidget?.title || 'Widget';
+        const targetName = targetWidget?.title || 'Widget';
         return (
-          <div
-            key={`resize-preview-${layout.i}`}
-            className={`absolute pointer-events-none z-45 border-2 border-dashed rounded-xl ${
-              isMoved
-                ? 'border-amber-400 bg-amber-100/40'
-                : isShrunk
-                  ? 'border-rose-400 bg-rose-100/40'
-                  : 'border-slate-300 bg-slate-100/40'
-            }`}
-            style={getZoneStyle(layout) || undefined}
-          />
+          <>
+            {/* Source widget's new position (where dragging widget will go) */}
+            <div
+              className={`absolute pointer-events-none z-50 border-2 border-solid rounded-xl flex flex-col items-center justify-center ${isDark ? 'bg-gray-200/50 border-slate-500' : 'bg-gray-200/70 border-slate-300'}`}
+              style={getZoneStyle(swapPreview.sourceNewPos) || undefined}
+            >
+              <span className={isDark ? "text-white text-sm font-bold drop-shadow-sm" : "text-black text-sm font-bold drop-shadow-sm"}>{sourceName}</span>
+              <span className={isDark ? "text-white text-xs font-medium" : "text-black text-xs font-medium"}>Swap Here</span>
+            </div>
+            {/* Target widget's new position (where target widget will move to) */}
+            <div
+              className={`absolute pointer-events-none z-50 border-2 border-solid  rounded-xl flex flex-col items-center justify-center ${isDark ? 'bg-gray-200/50 border-slate-500' : 'bg-gray-200/70 border-slate-300'}`}
+              style={getZoneStyle(swapPreview.targetNewPos) || undefined}
+            >
+              <span className={isDark ? "text-white text-sm font-bold drop-shadow-sm" : "text-black text-sm font-bold drop-shadow-sm"}>{targetName}</span>
+              <span className={isDark ? "text-white text-xs font-medium" : "text-black text-xs font-medium"}>Moving Here</span>
+            </div>
+          </>
         );
-      })}
+      })()}
+
+      {/* Resize preview overlays removed - was causing white/colored overlays on widgets during resize */}
 
       {containerWidth > 0 && (
         <div style={{ height: containerHeight, width: '100%' }}>

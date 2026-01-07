@@ -1,11 +1,59 @@
+import { useState, useRef, useEffect } from 'react';
 import { LayoutProvider, useLayout } from './contexts/LayoutContext';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 import { DashboardLayout } from './components/layout/DashboardLayout';
-import { WidgetPanel } from './components/layout/WidgetPanel';
+import { WidgetDefinitions } from './components/widgets';
+import type { WidgetType } from './types/gridLayout.types';
 
 function AppContent() {
-  const { isWidgetPanelOpen, toggleWidgetPanel } = useLayout();
+  const { addWidget, resetLayout } = useLayout();
   const { toggleTheme, isDark } = useTheme();
+  const [isAddWidgetOpen, setIsAddWidgetOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsAddWidgetOpen(false);
+      }
+    };
+
+    if (isAddWidgetOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isAddWidgetOpen]);
+
+  const handleAddWidget = (widgetId: string, symbol?: string, widgetName?: string) => {
+    let type: WidgetType = 'chart';
+    if (widgetId.startsWith('chart-')) {
+      type = 'chart';
+    } else if (widgetId === 'screener') {
+      type = 'screener';
+    } else if (widgetId === 'watchlist') {
+      type = 'watchlist';
+    }
+
+    const props = {
+      widgetId: `${widgetId}-${Date.now()}`,
+      ...(symbol && { symbol }),
+    };
+
+    addWidget(type, widgetName || widgetId.toUpperCase(), props);
+    setIsAddWidgetOpen(false);
+  };
+
+  const getWidgetPreviewGradient = (widgetId: string) => {
+    if (widgetId.startsWith('chart-')) {
+      return 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+    } else if (widgetId === 'screener') {
+      return 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)';
+    } else if (widgetId === 'watchlist') {
+      return 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)';
+    }
+    return 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+  };
 
   return (
     <div className={`flex flex-col h-screen w-screen overflow-hidden transition-colors duration-300 ${isDark ? 'bg-slate-900' : 'bg-slate-50'}`}>
@@ -48,6 +96,91 @@ function AppContent() {
 
         {/* Right: Actions */}
         <div className="flex items-center gap-2">
+          {/* Add Widget Button with Dropdown */}
+          <div className="relative" ref={dropdownRef}>
+            <button
+              onClick={() => setIsAddWidgetOpen(!isAddWidgetOpen)}
+              className={`flex items-center gap-2 px-3! py-1.5! rounded-lg transition-all cursor-pointer font-medium text-sm ${
+                isAddWidgetOpen
+                  ? 'bg-emerald-500 text-white'
+                  : isDark
+                    ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                    : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+              </svg>
+              Add Widget
+              <svg
+                className={`w-3 h-3 transition-transform duration-200 ${isAddWidgetOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {/* Dropdown Menu */}
+            <div
+              className={`absolute right-0 top-full mt-2! w-[450px] rounded-xl shadow-xl border overflow-hidden z-50 transform transition-all duration-200 origin-top-right ${
+                isAddWidgetOpen
+                  ? 'opacity-100 scale-100 translate-y-0'
+                  : 'opacity-0 scale-95 -translate-y-2 pointer-events-none'
+              } ${isDark ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}
+            >
+              <div className={`px-4! py-3! border-b flex items-center justify-between ${isDark ? 'border-slate-700' : 'border-slate-100'}`}>
+                <p className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-slate-800'}`}>Add Widgets</p>
+                <button
+                  onClick={() => {
+                    resetLayout();
+                    setIsAddWidgetOpen(false);
+                  }}
+                  className={`p-1.5! rounded-lg transition-all cursor-pointer ${isDark ? 'text-slate-400 hover:text-rose-400 hover:bg-rose-900/30' : 'text-slate-400 hover:text-rose-500 hover:bg-rose-50'}`}
+                  title="Reset Layout"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              </div>
+              <div className="max-h-125 overflow-y-auto p-3!">
+                <div className="grid grid-cols-2 gap-3!">
+                  {WidgetDefinitions.map((widget, index) => (
+                    <div
+                      key={widget.id}
+                      onClick={() => handleAddWidget(widget.id, widget.symbol, widget.name)}
+                      className={`border rounded-xl overflow-hidden cursor-pointer hover:border-emerald-400 hover:shadow-md ${isDark ? 'bg-slate-700 border-slate-600' : 'bg-white border-slate-200'}`}
+                      style={{
+                        opacity: isAddWidgetOpen ? 1 : 0,
+                        transform: isAddWidgetOpen ? 'translateY(0) scale(1)' : 'translateY(-16px) scale(0.95)',
+                        transition: `opacity 350ms cubic-bezier(0.4, 0, 0.2, 1), transform 350ms cubic-bezier(0.4, 0, 0.2, 1), border-color 200ms ease, box-shadow 200ms ease`,
+                        transitionDelay: isAddWidgetOpen ? `${index * 50}ms` : '0ms',
+                        willChange: 'opacity, transform',
+                      }}
+                    >
+                      {/* Preview Image */}
+                      <div
+                        className="w-full h-16 flex items-center justify-center text-white text-2xl"
+                        style={{ background: getWidgetPreviewGradient(widget.id) }}
+                      >
+                        {widget.icon}
+                      </div>
+                      {/* Widget Info */}
+                      <div className={`p-2! transition-colors ${isDark ? 'bg-slate-700' : 'bg-white'}`}>
+                        <h3 className={`font-semibold text-xs mb-0.5! ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{widget.name}</h3>
+                        <p className={`text-[10px] leading-tight line-clamp-2 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{widget.description}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className={`w-px h-6 mx-1! ${isDark ? 'bg-slate-600' : 'bg-slate-200'}`}></div>
+
           {/* Theme Toggle Button */}
           <button
             onClick={toggleTheme}
@@ -91,38 +224,10 @@ function AppContent() {
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Dashboard Canvas */}
-        <div className="flex-1 h-full min-h-0 transition-all duration-300" style={{ marginRight: isWidgetPanelOpen ? '300px' : '0' }}>
+        <div className="flex-1 h-full min-h-0">
           <DashboardLayout />
         </div>
-
-        {/* Widget Panel with slide animation */}
-        <div
-          className={`fixed right-0 top-14 bottom-0 w-[300px] shadow-xl z-40 border-l transform transition-all duration-300 ease-in-out ${
-            isWidgetPanelOpen ? 'translate-x-0' : 'translate-x-full'
-          } ${isDark ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}
-        >
-          <WidgetPanel />
-        </div>
       </div>
-
-      {/* Floating toggle button - only show when panel is closed */}
-      {!isWidgetPanelOpen && (
-        <button
-          onClick={toggleWidgetPanel}
-          className="fixed z-40 bg-emerald-500 hover:bg-emerald-600 text-white p-3 rounded-xl shadow-lg shadow-emerald-500/25 transition-all duration-300 cursor-pointer bottom-6 right-6 hover:scale-105"
-          title="Open widget panel"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-          </svg>
-        </button>
-      )}
     </div>
   );
 }

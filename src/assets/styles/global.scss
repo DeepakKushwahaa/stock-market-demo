@@ -79,14 +79,15 @@ html.dark {
   }
 
   &.resizing {
-    opacity: 0.9;
+    opacity: 0.5;
     z-index: 10;
+    transition: opacity 150ms ease !important;
   }
 
   &.react-draggable-dragging {
     transition: none;
     z-index: 100;
-    opacity: 0.9;
+    opacity: 0.4;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
   }
 

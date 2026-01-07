@@ -138,7 +138,170 @@ export function findAllFitPositions(
     }
   }
 
-  return positions;
+  // Step 1: Merge horizontally adjacent zones in each row
+  const rowMergedZones = simpleRowMerge(positions, widgetW, widgetH);
+
+  // Step 2: Merge vertically adjacent zones that have same X and width
+  const verticalMergedZones = mergeVerticallyAdjacent(rowMergedZones);
+
+  // Step 3: Remove zones that overlap with larger zones
+  const nonOverlappingZones = removeOverlappingZones(verticalMergedZones);
+
+  return nonOverlappingZones;
+}
+
+/**
+ * Simple row-wise merge - only merge horizontally adjacent positions
+ * Each row gets one merged zone spanning all valid positions
+ */
+function simpleRowMerge(zones: GridZone[], widgetW: number, widgetH: number): GridZone[] {
+  if (zones.length === 0) return zones;
+
+  // Group by Y position
+  const byRow: Map<number, GridZone[]> = new Map();
+  for (const zone of zones) {
+    const existing = byRow.get(zone.y) || [];
+    existing.push(zone);
+    byRow.set(zone.y, existing);
+  }
+
+  const result: GridZone[] = [];
+
+  // Process each row
+  for (const [y, rowZones] of byRow) {
+    // Sort by X
+    const sorted = [...rowZones].sort((a, b) => a.x - b.x);
+
+    // Merge consecutive positions
+    let startX = sorted[0].x;
+    let lastX = sorted[0].x;
+
+    for (let i = 1; i < sorted.length; i++) {
+      const zone = sorted[i];
+      // If this position is adjacent (next column)
+      if (zone.x === lastX + 1) {
+        lastX = zone.x;
+      } else {
+        // Gap found - save current merged zone
+        result.push({
+          x: startX,
+          y: y,
+          w: (lastX - startX) + widgetW,
+          h: widgetH
+        });
+        startX = zone.x;
+        lastX = zone.x;
+      }
+    }
+
+    // Save the last merged zone
+    result.push({
+      x: startX,
+      y: y,
+      w: (lastX - startX) + widgetW,
+      h: widgetH
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Merge vertically adjacent zones that have the same X position and width
+ * This merges zones that are stacked on top of each other
+ */
+function mergeVerticallyAdjacent(zones: GridZone[]): GridZone[] {
+  if (zones.length <= 1) return zones;
+
+  // Group zones by their X position and width (same column alignment)
+  const byXAndWidth: Map<string, GridZone[]> = new Map();
+  for (const zone of zones) {
+    const key = `${zone.x}-${zone.w}`;
+    const existing = byXAndWidth.get(key) || [];
+    existing.push(zone);
+    byXAndWidth.set(key, existing);
+  }
+
+  const result: GridZone[] = [];
+
+  // Process each group
+  for (const [, groupZones] of byXAndWidth) {
+    if (groupZones.length === 1) {
+      result.push(groupZones[0]);
+      continue;
+    }
+
+    // Sort by Y position
+    const sorted = [...groupZones].sort((a, b) => a.y - b.y);
+
+    // Merge consecutive/adjacent zones
+    let currentZone = { ...sorted[0] };
+
+    for (let i = 1; i < sorted.length; i++) {
+      const nextZone = sorted[i];
+
+      // Check if zones are vertically adjacent (current zone bottom touches next zone top)
+      // or overlapping vertically
+      if (nextZone.y <= currentZone.y + currentZone.h) {
+        // Merge: extend current zone to include next zone
+        const newBottom = Math.max(currentZone.y + currentZone.h, nextZone.y + nextZone.h);
+        currentZone.h = newBottom - currentZone.y;
+      } else {
+        // Gap found - save current merged zone and start new one
+        result.push(currentZone);
+        currentZone = { ...nextZone };
+      }
+    }
+
+    // Save the last merged zone
+    result.push(currentZone);
+  }
+
+  return result;
+}
+
+/**
+ * Remove overlapping zones - keep only non-overlapping ones
+ * Only remove a zone if it's mostly contained within a larger zone (>70% overlap)
+ */
+function removeOverlappingZones(zones: GridZone[]): GridZone[] {
+  if (zones.length <= 1) return zones;
+
+  // Sort by area (largest first) so we prefer keeping larger zones
+  const sorted = [...zones].sort((a, b) => (b.w * b.h) - (a.w * a.h));
+
+  const result: GridZone[] = [];
+
+  for (const zone of sorted) {
+    let shouldSkip = false;
+    const zoneArea = zone.w * zone.h;
+
+    for (const existing of result) {
+      // Calculate overlap
+      const overlapLeft = Math.max(zone.x, existing.x);
+      const overlapRight = Math.min(zone.x + zone.w, existing.x + existing.w);
+      const overlapTop = Math.max(zone.y, existing.y);
+      const overlapBottom = Math.min(zone.y + zone.h, existing.y + existing.h);
+
+      const overlapWidth = overlapRight - overlapLeft;
+      const overlapHeight = overlapBottom - overlapTop;
+
+      if (overlapWidth > 0 && overlapHeight > 0) {
+        const overlapArea = overlapWidth * overlapHeight;
+        // Only skip if >70% of this zone overlaps with existing zone
+        if (overlapArea / zoneArea > 0.7) {
+          shouldSkip = true;
+          break;
+        }
+      }
+    }
+
+    if (!shouldSkip) {
+      result.push(zone);
+    }
+  }
+
+  return result;
 }
 
 /**
