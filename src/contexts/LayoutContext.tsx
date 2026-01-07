@@ -24,6 +24,7 @@ interface LayoutContextType {
   removeWidget: (widgetId: string) => void;
   resetLayout: () => void;
   canAddWidget: () => boolean;
+  canAddWidgetType: (type: WidgetType) => boolean;
   // Panel toggle
   isWidgetPanelOpen: boolean;
   toggleWidgetPanel: () => void;
@@ -117,6 +118,40 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
   const canAddWidget = useCallback(() => {
     return widgets.length < GRID_CONFIG.maxWidgets;
   }, [widgets.length]);
+
+  // Check if a specific widget type can be added (has space after auto-adjustment)
+  const canAddWidgetType = useCallback((type: WidgetType) => {
+    if (widgets.length >= GRID_CONFIG.maxWidgets) {
+      return false;
+    }
+
+    const size = DEFAULT_WIDGET_SIZES[type];
+    const effectiveMaxRows = Math.max(maxRows, 10);
+
+    if (effectiveMaxRows < size.minH) {
+      return false;
+    }
+
+    // Build widget min sizes map for auto-adjustment
+    const widgetMinSizes: WidgetMinSizes = {};
+    for (const widget of widgets) {
+      const widgetSize = DEFAULT_WIDGET_SIZES[widget.type];
+      widgetMinSizes[widget.i] = { minW: widgetSize.minW, minH: widgetSize.minH };
+    }
+
+    // Use auto-adjust to check if space is available
+    const autoAdjust = calculateAutoAdjustForNewWidget(
+      layouts,
+      size.w,
+      size.h,
+      GRID_CONFIG.cols,
+      effectiveMaxRows,
+      widgetMinSizes,
+      GRID_CONFIG.maxWidgets
+    );
+
+    return autoAdjust.canAdd && autoAdjust.newWidgetPosition !== null;
+  }, [layouts, widgets, maxRows]);
 
   const addWidget = useCallback((type: WidgetType, title: string, props: Record<string, unknown>) => {
     const size = DEFAULT_WIDGET_SIZES[type];
@@ -231,73 +266,57 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     setIsWidgetPanelOpen(open);
   }, []);
 
-  // Set preview widget - calculates position automatically
+  // Set preview widget - calculates position using auto-adjustment (same logic as addWidget)
   const setPreviewWidget = useCallback((type: WidgetType | null, title?: string) => {
     if (!type) {
       setPreviewWidgetState(null);
       return;
     }
 
-    // Check if there's space for this widget
+    // Check if there's space for this widget using the same logic as addWidget
     const size = DEFAULT_WIDGET_SIZES[type];
-    const cols = GRID_CONFIG.cols;
-    const widgetWidth = size.w;
-    const widgetHeight = size.h;
 
     // Use a reasonable minimum maxRows if not set yet
     const effectiveMaxRows = Math.max(maxRows, 10);
 
-    // If maxRows is too small for the widget, no space available
-    if (effectiveMaxRows < widgetHeight) {
+    // If maxRows is too small for the widget's minH, no space available
+    if (effectiveMaxRows < size.minH) {
       setPreviewWidgetState(null);
       return;
     }
 
-    // Create a grid to track occupied cells
-    const grid: boolean[][] = [];
-    for (let row = 0; row < effectiveMaxRows; row++) {
-      grid[row] = new Array(cols).fill(false);
+    // Build widget min sizes map for auto-adjustment (same as addWidget)
+    const widgetMinSizes: WidgetMinSizes = {};
+    for (const widget of widgets) {
+      const widgetSize = DEFAULT_WIDGET_SIZES[widget.type];
+      widgetMinSizes[widget.i] = { minW: widgetSize.minW, minH: widgetSize.minH };
     }
 
-    // Mark occupied cells
-    for (const layout of layouts) {
-      for (let row = layout.y; row < layout.y + layout.h && row < effectiveMaxRows; row++) {
-        for (let col = layout.x; col < layout.x + layout.w && col < cols; col++) {
-          if (row >= 0 && row < effectiveMaxRows && col >= 0 && col < cols) {
-            grid[row][col] = true;
-          }
-        }
-      }
-    }
+    // Use auto-adjust to find space, shrinking existing widgets if needed (same as addWidget)
+    const autoAdjust = calculateAutoAdjustForNewWidget(
+      layouts,
+      size.w,
+      size.h,
+      GRID_CONFIG.cols,
+      effectiveMaxRows,
+      widgetMinSizes,
+      GRID_CONFIG.maxWidgets
+    );
 
-    // Find first available position for the widget
-    for (let row = 0; row <= effectiveMaxRows - widgetHeight; row++) {
-      for (let col = 0; col <= cols - widgetWidth; col++) {
-        let canFit = true;
-        for (let r = row; r < row + widgetHeight && canFit; r++) {
-          for (let c = col; c < col + widgetWidth && canFit; c++) {
-            if (grid[r] && grid[r][c]) {
-              canFit = false;
-            }
-          }
-        }
-        if (canFit) {
-          setPreviewWidgetState({
-            type,
-            title: title || type.toUpperCase(),
-            x: col,
-            y: row,
-            w: widgetWidth,
-            h: widgetHeight,
-          });
-          return;
-        }
-      }
+    if (autoAdjust.canAdd && autoAdjust.newWidgetPosition) {
+      setPreviewWidgetState({
+        type,
+        title: title || type.toUpperCase(),
+        x: autoAdjust.newWidgetPosition.x,
+        y: autoAdjust.newWidgetPosition.y,
+        w: size.w,
+        h: size.h,
+      });
+    } else {
+      // No space available even after auto-adjustment
+      setPreviewWidgetState(null);
     }
-
-    // No space available
-    setPreviewWidgetState(null);
-  }, [layouts, maxRows]);
+  }, [layouts, widgets, maxRows]);
 
   const toggleMaximizeWidget = useCallback((widgetId: string) => {
     setMaximizedWidgetId(prev => prev === widgetId ? null : widgetId);
@@ -312,6 +331,7 @@ export const LayoutProvider: React.FC<LayoutProviderProps> = ({ children }) => {
     removeWidget,
     resetLayout,
     canAddWidget,
+    canAddWidgetType,
     isWidgetPanelOpen,
     toggleWidgetPanel,
     setWidgetPanelOpen,

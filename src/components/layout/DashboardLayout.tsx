@@ -40,6 +40,7 @@ export const DashboardLayout: React.FC = () => {
   const resizeStartLayoutRef = useRef<GridItemLayout[]>(layouts);
   const isResizingRef = useRef(false);
   const isDraggingRef = useRef(false);
+  const [isResizing, setIsResizing] = useState(false);
   // Store DOM element references at resize start for direct manipulation
   const widgetDomMapRef = useRef<Map<string, HTMLElement>>(new Map());
   // Track the last pushed layout during resize to allow incremental pushing
@@ -613,6 +614,7 @@ export const DashboardLayout: React.FC = () => {
   // Handle resize start - store the current valid layout and build DOM element map
   const handleResizeStart = useCallback((currentLayout: GridItemLayout[], oldItem: GridItemLayout, _newItem: GridItemLayout, _placeholder: GridItemLayout, e: MouseEvent, _element: HTMLElement) => {
     isResizingRef.current = true;
+    setIsResizing(true);
     resizingWidgetIdRef.current = oldItem.i;
     resizeStartMouseXRef.current = e.clientX;
     resizeStartMouseYRef.current = e.clientY;
@@ -733,6 +735,7 @@ export const DashboardLayout: React.FC = () => {
         updateLayouts(lastValidLayoutRef.current);
         setResizePreview(null);
         isResizingRef.current = false;
+        setIsResizing(false);
         resizeDirectionRef.current = null;
         return;
       }
@@ -768,12 +771,14 @@ export const DashboardLayout: React.FC = () => {
       setResizePreview(null);
       // Reset isResizing AFTER layout update to prevent handleLayoutChange from interfering
       isResizingRef.current = false;
+      setIsResizing(false);
       resizeDirectionRef.current = null;
       return;
     }
 
     // Reset isResizing flag
     isResizingRef.current = false;
+    setIsResizing(false);
     resizeDirectionRef.current = null;
 
     setResizePreview(null);
@@ -4943,10 +4948,18 @@ export const DashboardLayout: React.FC = () => {
   const previewStyle = getPreviewStyle();
 
   // Calculate actual grid cell size for visual background
-  const cellWidth = containerWidth > 0 
+  const cellWidth = containerWidth > 0
     ? (containerWidth - GRID_CONFIG.containerPadding[0] * 2 - GRID_CONFIG.margin[0] * (GRID_CONFIG.cols - 1)) / GRID_CONFIG.cols + GRID_CONFIG.margin[0]
     : 32;
   const cellHeight = GRID_CONFIG.rowHeight + GRID_CONFIG.margin[1];
+
+  // Calculate dot offset to align with widget corners (not cell corners)
+  // Dots should appear at widget edges, so offset by margin/2 from cell start
+  const dotOffsetX = GRID_CONFIG.containerPadding[0] - GRID_CONFIG.margin[0] / 2;
+  const dotOffsetY = GRID_CONFIG.containerPadding[1] - GRID_CONFIG.margin[1] / 2;
+
+  // Show dots only when resizing, dragging, or dropdown preview is active
+  const showGridDots = isResizing || isDraggingWidget || previewWidget !== null;
 
   return (
     <div
@@ -4955,13 +4968,13 @@ export const DashboardLayout: React.FC = () => {
       style={{
         height: '100%',
         backgroundColor: isDark ? '#0f172a' : '#ffffff',
-        backgroundImage: isDark
-          ? `linear-gradient(to right, #1e293b 1px, transparent 1px),
-             linear-gradient(to bottom, #1e293b 1px, transparent 1px)`
-          : `linear-gradient(to right, #f1f1f1 1px, transparent 1px),
-             linear-gradient(to bottom, #f1f1f1 1px, transparent 1px)`,
+        backgroundImage: showGridDots
+          ? (isDark
+            ? `radial-gradient(circle at 0 0, rgba(255, 255, 255, 0.6) 2.5px, transparent 2.5px)`
+            : `radial-gradient(circle at 0 0, rgba(156, 163, 175, 0.8) 2.5px, transparent 2.5px)`)
+          : 'none',
         backgroundSize: `${cellWidth}px ${cellHeight}px`,
-        backgroundPosition: `${GRID_CONFIG.containerPadding[0]}px ${GRID_CONFIG.containerPadding[1]}px`,
+        backgroundPosition: `${dotOffsetX}px ${dotOffsetY}px`,
       }}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
@@ -4970,8 +4983,8 @@ export const DashboardLayout: React.FC = () => {
       {/* Feature 1: Enhanced preview placeholder for widget panel hover or external drag */}
       {previewStyle && !isDraggingWidget && (
         <div
-          className="absolute pointer-events-none z-50 border-2 border-dashed border-emerald-400 bg-emerald-500/15 rounded-xl flex items-center justify-center transition-all duration-200 animate-pulse shadow-lg shadow-emerald-500/20"
-          style={previewStyle}
+          className="absolute pointer-events-none z-30 border-2 border-dashed border-emerald-400 bg-emerald-500/15 flex items-center justify-center transition-all duration-200 animate-pulse shadow-lg shadow-emerald-500/20"
+          style={{ ...previewStyle, borderRadius: 0 }}
         >
           <div className="text-center">
             <div className={`text-sm font-semibold ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>{previewWidget?.title}</div>
@@ -5003,7 +5016,7 @@ export const DashboardLayout: React.FC = () => {
           <>
             {/* Source widget's new position (where dragging widget will go) */}
             <div
-              className={`absolute pointer-events-none z-50 border-2 border-solid rounded-xl flex flex-col items-center justify-center ${isDark ? 'bg-gray-200/50 border-slate-500' : 'bg-gray-200/70 border-slate-300'}`}
+              className={`absolute pointer-events-none z-50 border-2 border-solid flex flex-col items-center justify-center ${isDark ? 'bg-gray-200/50 border-slate-500' : 'bg-gray-200/70 border-slate-300'}`}
               style={getZoneStyle(swapPreview.sourceNewPos) || undefined}
             >
               <span className={isDark ? "text-white text-sm font-bold drop-shadow-sm" : "text-black text-sm font-bold drop-shadow-sm"}>{sourceName}</span>
@@ -5011,7 +5024,7 @@ export const DashboardLayout: React.FC = () => {
             </div>
             {/* Target widget's new position (where target widget will move to) */}
             <div
-              className={`absolute pointer-events-none z-50 border-2 border-solid  rounded-xl flex flex-col items-center justify-center ${isDark ? 'bg-gray-200/50 border-slate-500' : 'bg-gray-200/70 border-slate-300'}`}
+              className={`absolute pointer-events-none z-50 border-2 border-solid flex flex-col items-center justify-center ${isDark ? 'bg-gray-200/50 border-slate-500' : 'bg-gray-200/70 border-slate-300'}`}
               style={getZoneStyle(swapPreview.targetNewPos) || undefined}
             >
               <span className={isDark ? "text-white text-sm font-bold drop-shadow-sm" : "text-black text-sm font-bold drop-shadow-sm"}>{targetName}</span>

@@ -6,7 +6,7 @@ import { WidgetDefinitions } from './components/widgets';
 import type { WidgetType } from './types/gridLayout.types';
 
 function AppContent() {
-  const { addWidget, resetLayout } = useLayout();
+  const { addWidget, resetLayout, widgets, setPreviewWidget } = useLayout();
   const { toggleTheme, isDark } = useTheme();
   const [isAddWidgetOpen, setIsAddWidgetOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -16,14 +16,18 @@ function AppContent() {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsAddWidgetOpen(false);
+        setPreviewWidget(null); // Clear preview when dropdown closes
       }
     };
 
     if (isAddWidgetOpen) {
       document.addEventListener('mousedown', handleClickOutside);
+    } else {
+      // Clear preview when dropdown is closed
+      setPreviewWidget(null);
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isAddWidgetOpen]);
+  }, [isAddWidgetOpen, setPreviewWidget]);
 
   const handleAddWidget = (widgetId: string, symbol?: string, widgetName?: string) => {
     let type: WidgetType = 'chart';
@@ -53,6 +57,42 @@ function AppContent() {
       return 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)';
     }
     return 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+  };
+
+  // Check if a widget definition is already added to the dashboard
+  const isWidgetAlreadyAdded = (widgetId: string): boolean => {
+    // For chart widgets, check if a chart with the same symbol exists
+    if (widgetId.startsWith('chart-')) {
+      const symbol = widgetId.replace('chart-', '').toUpperCase();
+      return widgets.some(w => w.type === 'chart' && w.props?.symbol === symbol);
+    }
+    // For screener and watchlist, check by type
+    if (widgetId === 'screener') {
+      return widgets.some(w => w.type === 'screener');
+    }
+    if (widgetId === 'watchlist') {
+      return widgets.some(w => w.type === 'watchlist');
+    }
+    return false;
+  };
+
+  // Get widget type from widget ID
+  const getWidgetType = (widgetId: string): WidgetType => {
+    if (widgetId.startsWith('chart-')) return 'chart';
+    if (widgetId === 'screener') return 'screener';
+    if (widgetId === 'watchlist') return 'watchlist';
+    return 'chart';
+  };
+
+  // Handle hover to show preview
+  const handleWidgetHover = (widgetId: string, widgetName: string) => {
+    const type = getWidgetType(widgetId);
+    setPreviewWidget(type, widgetName);
+  };
+
+  // Clear preview on mouse leave
+  const handleWidgetHoverEnd = () => {
+    setPreviewWidget(null);
   };
 
   return (
@@ -85,7 +125,7 @@ function AppContent() {
             <input
               type="text"
               placeholder="Search symbols, widgets..."
-              className={`w-full pl-10! pr-4! py-2! border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all ${
+              className={`w-full pl-10! pr-4! py-2! border rounded-[8px] text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all ${
                 isDark
                   ? 'bg-slate-700 border-slate-600 text-slate-200 placeholder-slate-400'
                   : 'bg-slate-100 border-slate-200 text-slate-700 placeholder-slate-400'
@@ -100,7 +140,7 @@ function AppContent() {
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setIsAddWidgetOpen(!isAddWidgetOpen)}
-              className={`flex items-center gap-2 px-3! py-1.5! rounded-lg transition-all cursor-pointer font-medium text-sm ${
+              className={`flex items-center gap-2 px-3! py-1.5! rounded-[8px] transition-all cursor-pointer font-medium text-sm ${
                 isAddWidgetOpen
                   ? 'bg-emerald-500 text-white'
                   : isDark
@@ -124,7 +164,7 @@ function AppContent() {
 
             {/* Dropdown Menu */}
             <div
-              className={`absolute right-0 top-full mt-2! w-[450px] rounded-xl shadow-xl border overflow-hidden z-50 transform transition-all duration-200 origin-top-right ${
+              className={`absolute right-0 top-full mt-2! w-[450px] rounded-[8px] shadow-xl border overflow-hidden z-50 transform transition-all duration-200 origin-top-right ${
                 isAddWidgetOpen
                   ? 'opacity-100 scale-100 translate-y-0'
                   : 'opacity-0 scale-95 -translate-y-2 pointer-events-none'
@@ -137,7 +177,7 @@ function AppContent() {
                     resetLayout();
                     setIsAddWidgetOpen(false);
                   }}
-                  className={`p-1.5! rounded-lg transition-all cursor-pointer ${isDark ? 'text-slate-400 hover:text-rose-400 hover:bg-rose-900/30' : 'text-slate-400 hover:text-rose-500 hover:bg-rose-50'}`}
+                  className={`p-1.5! rounded-[8px] transition-all cursor-pointer ${isDark ? 'text-slate-400 hover:text-rose-400 hover:bg-rose-900/30' : 'text-slate-400 hover:text-rose-500 hover:bg-rose-50'}`}
                   title="Reset Layout"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -145,35 +185,47 @@ function AppContent() {
                   </svg>
                 </button>
               </div>
-              <div className="max-h-125 overflow-y-auto p-3!">
-                <div className="grid grid-cols-2 gap-3!">
-                  {WidgetDefinitions.map((widget, index) => (
-                    <div
-                      key={widget.id}
-                      onClick={() => handleAddWidget(widget.id, widget.symbol, widget.name)}
-                      className={`border rounded-xl overflow-hidden cursor-pointer hover:border-emerald-400 hover:shadow-md ${isDark ? 'bg-slate-700 border-slate-600' : 'bg-white border-slate-200'}`}
-                      style={{
-                        opacity: isAddWidgetOpen ? 1 : 0,
-                        transform: isAddWidgetOpen ? 'translateY(0) scale(1)' : 'translateY(-16px) scale(0.95)',
-                        transition: `opacity 350ms cubic-bezier(0.4, 0, 0.2, 1), transform 350ms cubic-bezier(0.4, 0, 0.2, 1), border-color 200ms ease, box-shadow 200ms ease`,
-                        transitionDelay: isAddWidgetOpen ? `${index * 50}ms` : '0ms',
-                        willChange: 'opacity, transform',
-                      }}
-                    >
-                      {/* Preview Image */}
+              <div className="max-h-125 overflow-y-auto p-2!">
+                <div className="grid grid-cols-2 gap-2!">
+                  {WidgetDefinitions.map((widget, index) => {
+                    const isAdded = isWidgetAlreadyAdded(widget.id);
+                    return (
                       <div
-                        className="w-full h-16 flex items-center justify-center text-white text-2xl"
-                        style={{ background: getWidgetPreviewGradient(widget.id) }}
+                        key={widget.id}
+                        onClick={() => !isAdded && handleAddWidget(widget.id, widget.symbol, widget.name)}
+                        onMouseEnter={() => !isAdded && handleWidgetHover(widget.id, widget.name)}
+                        onMouseLeave={handleWidgetHoverEnd}
+                        className={`border rounded-[8px] overflow-hidden ${
+                          isAdded
+                            ? 'cursor-not-allowed'
+                            : 'cursor-pointer hover:border-emerald-400 hover:shadow-md'
+                        } ${isDark ? 'bg-slate-700 border-slate-600' : 'bg-white border-slate-200'}`}
+                        style={{
+                          opacity: isAddWidgetOpen ? (isAdded ? 0.5 : 1) : 0,
+                          transform: isAddWidgetOpen ? 'translateY(0) scale(1)' : 'translateY(-16px) scale(0.95)',
+                          transition: `opacity 350ms cubic-bezier(0.4, 0, 0.2, 1), transform 350ms cubic-bezier(0.4, 0, 0.2, 1), border-color 200ms ease, box-shadow 200ms ease`,
+                          transitionDelay: isAddWidgetOpen ? `${index * 50}ms` : '0ms',
+                          willChange: 'opacity, transform',
+                        }}
                       >
-                        {widget.icon}
+                        {/* Preview Image */}
+                        <div
+                          className={`w-full h-16 flex items-center justify-center text-white text-2xl ${isAdded ? 'grayscale' : ''}`}
+                          style={{ background: getWidgetPreviewGradient(widget.id) }}
+                        >
+                          {widget.icon}
+                        </div>
+                        {/* Widget Info */}
+                        <div className={`p-2! transition-colors ${isDark ? 'bg-slate-700' : 'bg-white'}`}>
+                          <h3 className={`font-semibold text-xs mb-0.5! ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
+                            {widget.name}
+                            {isAdded && <span className={`ml-1 text-[10px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>(Added)</span>}
+                          </h3>
+                          <p className={`text-[10px] leading-tight line-clamp-2 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{widget.description}</p>
+                        </div>
                       </div>
-                      {/* Widget Info */}
-                      <div className={`p-2! transition-colors ${isDark ? 'bg-slate-700' : 'bg-white'}`}>
-                        <h3 className={`font-semibold text-xs mb-0.5! ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{widget.name}</h3>
-                        <p className={`text-[10px] leading-tight line-clamp-2 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{widget.description}</p>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -184,7 +236,7 @@ function AppContent() {
           {/* Theme Toggle Button */}
           <button
             onClick={toggleTheme}
-            className={`p-2! rounded-lg transition-all cursor-pointer ${
+            className={`p-2! rounded-[8px] transition-all cursor-pointer ${
               isDark
                 ? 'text-yellow-400 hover:text-yellow-300 hover:bg-slate-700'
                 : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
@@ -203,12 +255,12 @@ function AppContent() {
               </svg>
             )}
           </button>
-          <button className={`p-2! rounded-lg transition-all cursor-pointer ${isDark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-700' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'}`}>
+          <button className={`p-2! rounded-[8px] transition-all cursor-pointer ${isDark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-700' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'}`}>
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
             </svg>
           </button>
-          <button className={`p-2! rounded-lg transition-all cursor-pointer ${isDark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-700' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'}`}>
+          <button className={`p-2! rounded-[8px] transition-all cursor-pointer ${isDark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-700' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'}`}>
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />

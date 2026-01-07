@@ -21,7 +21,7 @@ export const WidgetWrapper: React.FC<WidgetWrapperProps> = ({
   const { isDark } = useTheme();
 
   return (
-    <div className={`h-full flex flex-col rounded-xl overflow-hidden border shadow-sm hover:shadow-md transition-all duration-200 relative ${
+    <div className={`h-full flex flex-col rounded-none overflow-hidden border shadow-sm hover:shadow-md transition-all duration-200 relative ${
       isDark ? 'bg-slate-800' : 'bg-white'
     } ${
       isHighlighted
